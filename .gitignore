@@ -1,5 +1,6 @@
 # Logs directory for OCR processing
 *.log
+log_conversao_*.txt
 
 # Temporary files
 temp/
@@ -29,6 +30,7 @@ wheels/
 
 # Virtual environment
 venv/
+.venv/
 ENV/
 env/
 
@@ -47,6 +49,7 @@ Thumbs.db
 output/
 # Only ignore generated markdown files in output folder
 output/*.md
+Processo_*_ocr*.md
 
 # Test PDFs
 tests/sample_pdfs/
