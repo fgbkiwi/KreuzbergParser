@@ -241,7 +241,7 @@ python-dotenv==1.0.0      # Configuração .env
 - **Acurácia**: ⭐⭐⭐⭐
 
 ### 🚀 GPU Mode
-- **Backend**: PaddleOCR
+- **Backend**: EasyOCR
 - **DPI**: 300
 - **Preprocessing**: Completo
 - **Tables**: Sim

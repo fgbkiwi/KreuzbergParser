@@ -30,58 +30,75 @@ class OCRApp:
         self.selected_mode = ProcessingMode.EXPRESS
         self.is_processing = False
         
-        # Setup UI
-        self.setup_ui()
-        
         # GPU info
         self.gpu_info = gpu_detector.get_gpu_info()
         logger.info(f"GPU Status: {self.gpu_info['message']}")
+
+        # Setup UI
+        self.setup_ui()
     
     def setup_ui(self):
         """Configure Flet interface"""
         # Page configuration
         self.page.title = self.config.WINDOW_TITLE
-        self.page.window_width = self.config.WINDOW_WIDTH
-        self.page.window_height = self.config.WINDOW_HEIGHT
-        self.page.theme_mode = self.config.THEME_MODE
+        self.page.window.width = self.config.WINDOW_WIDTH
+        self.page.window.height = self.config.WINDOW_HEIGHT
+        self.page.window.min_width = self.config.WINDOW_WIDTH
+        self.page.window.min_height = self.config.WINDOW_HEIGHT
+        self.page.theme_mode = self._resolve_theme_mode(self.config.THEME_MODE)
         
-        # File pickers
-        self.pdf_picker = ft.FilePicker(on_result=self.on_pdf_selected)
-        self.folder_picker = ft.FilePicker(on_result=self.on_folder_selected)
-        
-        self.page.overlay.extend([self.pdf_picker, self.folder_picker])
+        # File pickers (services)
+        self.pdf_picker = ft.FilePicker()
+        self.folder_picker = ft.FilePicker()
+        self.page.services.extend([self.pdf_picker, self.folder_picker])
         
         # UI Components
         self.pdf_path_field = ft.TextField(
             label="Arquivo PDF",
             read_only=True,
-            width=500,
+            expand=True,
+            border_width=1,
+            border_color=ft.Colors.GREY_400,
             hint_text="Clique no botão para selecionar..."
         )
         
         self.output_folder_field = ft.TextField(
             label="Pasta de Destino",
             read_only=True,
-            width=500,
+            expand=True,
+            border_width=1,
+            border_color=ft.Colors.GREY_400,
             hint_text="Clique no botão para selecionar..."
         )
         
         # Processing mode radio buttons
         self.mode_radio = ft.RadioGroup(
             content=ft.Column([
-                ft.Radio(
-                    value=ProcessingMode.EXPRESS,
-                    label="⚡ Express (Rápido) - Tesseract, processamento mínimo"
+                ft.Container(
+                    height=32,
+                    alignment=ft.Alignment.CENTER_LEFT,
+                    content=ft.Radio(
+                        value=ProcessingMode.EXPRESS,
+                        label="⚡ Express (Rápido) - Tesseract, processamento mínimo"
+                    )
                 ),
-                ft.Radio(
-                    value=ProcessingMode.CPU,
-                    label="💻 CPU (Padrão) - Tesseract com pré-processamento completo"
+                ft.Container(
+                    height=32,
+                    alignment=ft.Alignment.CENTER_LEFT,
+                    content=ft.Radio(
+                        value=ProcessingMode.CPU,
+                        label="💻 CPU (Padrão) - Tesseract com pré-processamento completo"
+                    )
                 ),
-                ft.Radio(
-                    value=ProcessingMode.GPU,
-                    label="🚀 GPU (Alta Qualidade) - PaddleOCR + TrOCR (requer NVIDIA GPU)"
+                ft.Container(
+                    height=32,
+                    alignment=ft.Alignment.CENTER_LEFT,
+                    content=ft.Radio(
+                        value=ProcessingMode.GPU,
+                        label="🚀 GPU (Alta Qualidade) - EasyOCR + TrOCR (só c/ NVIDIA GPU)"
+                    )
                 )
-            ]),
+            ], spacing=6),
             value=ProcessingMode.EXPRESS,
             on_change=self.on_mode_changed
         )
@@ -93,128 +110,202 @@ class OCRApp:
         )
         
         self.enable_handwriting_check = ft.Checkbox(
-            label="Detectar texto manuscrito (TrOCR - apenas modo GPU)",
+            label="Detectar texto manuscrito (TrOCR - só modo GPU)",
             value=False
         )
         
         # GPU status
         gpu_status_text = self._get_gpu_status_text()
-        gpu_color = ft.colors.GREEN if self.gpu_info['available'] else ft.colors.ORANGE
+        gpu_color = ft.Colors.GREEN if self.gpu_info['available'] else ft.Colors.ORANGE
         self.gpu_status = ft.Text(gpu_status_text, size=12, color=gpu_color)
         
         # Progress
-        self.progress_bar = ft.ProgressBar(width=600, visible=False)
+        self.progress_bar = ft.ProgressBar(expand=True, visible=False)
         self.progress_text = ft.Text("Aguardando seleção de arquivo...", size=14)
         
         # Log area
-        self.log_column = ft.Column(
-            scroll=ft.ScrollMode.AUTO,
-            height=200,
-            width=650
+        self.log_field = ft.TextField(
+            value="",
+            multiline=True,
+            read_only=True,
+            expand=True,
+            border_width=1,
+            border_color=ft.Colors.GREY_400,
+            text_size=12
         )
         
         # Statistics
-        self.stats_text = ft.Text("", size=12)
+        self.stats_field = ft.TextField(
+            value="",
+            multiline=True,
+            read_only=True,
+            expand=True,
+            border_width=1,
+            border_color=ft.Colors.GREY_400,
+            text_size=12
+        )
         
         # Process button
         self.process_button = ft.ElevatedButton(
-            text="🚀 PROCESSAR PDF",
+            content=ft.Text("🚀 PROCESSAR PDF"),
             on_click=self.on_process_clicked,
             disabled=True,
             width=200,
             height=50,
             style=ft.ButtonStyle(
-                bgcolor=ft.colors.BLUE_700,
-                color=ft.colors.WHITE
+                bgcolor=ft.Colors.BLUE_700,
+                color=ft.Colors.WHITE
             )
+        )
+
+        # Save log button
+        self.save_log_button = ft.ElevatedButton(
+            content=ft.Text("💾 Salvar Log"),
+            on_click=self.on_save_log_clicked,
+            height=32
         )
         
         # Build layout
         self.page.add(
             ft.Container(
+                expand=True,
                 content=ft.Column([
                     # Title
-                    ft.Text(
-                        "📄 Sistema Inteligente de OCR para PDFs Judiciais",
-                        size=24,
-                        weight=ft.FontWeight.BOLD,
-                        text_align=ft.TextAlign.CENTER
-                    ),
-                    ft.Text(
-                        "Powered by Kreuzberg 🚀",
-                        size=14,
-                        color=ft.colors.BLUE_700,
-                        text_align=ft.TextAlign.CENTER
-                    ),
-                    ft.Divider(height=20),
-                    
+                    ft.Row([
+                        ft.Text(
+                            "📄 Sistema Inteligente de OCR para PDFs Judiciais",
+                            size=24,
+                            weight=ft.FontWeight.BOLD,
+                            expand=True
+                        ),
+                        ft.Text(
+                            "Powered by Kreuzberg 🚀",
+                            size=14,
+                            color=ft.Colors.BLUE_700
+                        )
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Divider(height=16),
+
                     # File selection
-                    ft.Text("📁 Seleção de Arquivos", size=16, weight=ft.FontWeight.BOLD),
-                    ft.Row([
-                        ft.ElevatedButton(
-                            "📂 Selecionar PDF",
-                            on_click=lambda _: self.pdf_picker.pick_files(
-                                allowed_extensions=["pdf"]
-                            ),
-                            icon=ft.icons.PICTURE_AS_PDF
-                        ),
-                        self.pdf_path_field
-                    ]),
-                    
-                    ft.Row([
-                        ft.ElevatedButton(
-                            "📁 Pasta Destino",
-                            on_click=lambda _: self.folder_picker.get_directory_path(),
-                            icon=ft.icons.FOLDER
-                        ),
-                        self.output_folder_field
-                    ]),
-                    
-                    ft.Divider(height=20),
-                    
-                    # Processing mode
-                    ft.Text("⚙️ Modo de Processamento", size=16, weight=ft.FontWeight.BOLD),
-                    self.mode_radio,
-                    
-                    # Options
-                    ft.Text("🔧 Opções", size=16, weight=ft.FontWeight.BOLD),
-                    self.generate_markdown_check,
-                    self.enable_handwriting_check,
-                    
-                    # GPU status
-                    ft.Row([
-                        ft.Icon(ft.icons.COMPUTER, size=16),
-                        ft.Text("Status GPU:", size=12),
-                        self.gpu_status
-                    ]),
-                    
-                    ft.Divider(height=20),
-                    
-                    # Process button
                     ft.Container(
-                        content=self.process_button,
-                        alignment=ft.alignment.center
-                    ),
-                    
-                    # Progress
-                    self.progress_bar,
-                    self.progress_text,
-                    
-                    ft.Divider(height=10),
-                    
-                    # Log
-                    ft.Text("📋 Log de Processamento", size=14, weight=ft.FontWeight.BOLD),
-                    ft.Container(
-                        content=self.log_column,
-                        border=ft.border.all(1, ft.colors.GREY_400),
+                        padding=12,
+                        border=ft.border.all(1, ft.Colors.GREY_400),
                         border_radius=5,
-                        padding=10
+                        bgcolor=ft.Colors.GREY_50,
+                        content=ft.Column([
+                            ft.Text("📁 Seleção de Arquivos", size=16, weight=ft.FontWeight.BOLD),
+                            ft.Row([
+                                self.pdf_path_field,
+                                ft.ElevatedButton(
+                                    content=ft.Text("📂 Selecionar PDF"),
+                                    on_click=self.handle_pick_pdf,
+                                    icon=ft.Icons.PICTURE_AS_PDF,
+                                    width=190
+                                )
+                            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            ft.Row([
+                                self.output_folder_field,
+                                ft.ElevatedButton(
+                                    content=ft.Text("📁 Pasta Destino"),
+                                    on_click=self.handle_pick_folder,
+                                    icon=ft.Icons.FOLDER,
+                                    width=190
+                                )
+                            ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                        ], spacing=10)
                     ),
-                    
-                    # Statistics
-                    self.stats_text
-                    
-                ], scroll=ft.ScrollMode.AUTO, spacing=10),
+
+                    # Processing mode + options
+                    ft.Row([
+                        ft.Container(
+                            expand=55,
+                            padding=10,
+                            border=ft.border.all(1, ft.Colors.GREY_400),
+                            border_radius=5,
+                            bgcolor=ft.Colors.BLUE_50,
+                            content=ft.Column([
+                                ft.Text("⚙️ Modo de Processamento", size=16, weight=ft.FontWeight.BOLD),
+                                self.mode_radio
+                            ], spacing=8)
+                        ),
+                        ft.Container(
+                            expand=45,
+                            padding=10,
+                            border=ft.border.all(1, ft.Colors.GREY_400),
+                            border_radius=5,
+                            bgcolor=ft.Colors.GREEN_50,
+                            content=ft.Column([
+                                ft.Text("🔧 Opções", size=16, weight=ft.FontWeight.BOLD),
+                                ft.Container(
+                                    height=32,
+                                    alignment=ft.Alignment.CENTER_LEFT,
+                                    content=self.generate_markdown_check
+                                ),
+                                ft.Container(
+                                    height=32,
+                                    alignment=ft.Alignment.CENTER_LEFT,
+                                    content=self.enable_handwriting_check
+                                ),
+                                ft.Container(
+                                    height=32,
+                                    alignment=ft.Alignment.CENTER_LEFT,
+                                    content=ft.Row([
+                                        ft.Container(width=14),
+                                        ft.Icon(ft.Icons.COMPUTER, size=16),
+                                        ft.Text("Status GPU:", size=12),
+                                        self.gpu_status
+                                    ])
+                                )
+                            ], spacing=8)
+                        )
+                    ], spacing=12),
+
+                    # Log + statistics
+                    ft.Row([
+                        ft.Container(
+                            expand=2,
+                            height=240,
+                            padding=10,
+                            border=ft.border.all(1, ft.Colors.GREY_400),
+                            border_radius=5,
+                            bgcolor=ft.Colors.AMBER_50,
+                            content=ft.Column([
+                                ft.Text("📋 Log de Processamento", size=16, weight=ft.FontWeight.BOLD),
+                                self.log_field,
+                                ft.Row(
+                                    [self.save_log_button],
+                                    alignment=ft.MainAxisAlignment.END
+                                )
+                            ], spacing=8)
+                        ),
+                        ft.Container(
+                            expand=1,
+                            height=240,
+                            padding=10,
+                            border=ft.border.all(1, ft.Colors.GREY_400),
+                            border_radius=5,
+                            bgcolor=ft.Colors.TEAL_50,
+                            content=ft.Column([
+                                ft.Text("📊 Estatísticas", size=16, weight=ft.FontWeight.BOLD),
+                                self.stats_field
+                            ], spacing=8)
+                        )
+                    ], spacing=12),
+
+                    ft.Row(
+                        [
+                            ft.Column(
+                                [self.progress_text, self.progress_bar],
+                                spacing=4,
+                                expand=True
+                            ),
+                            self.process_button
+                        ],
+                        alignment=ft.MainAxisAlignment.END,
+                        vertical_alignment=ft.CrossAxisAlignment.END
+                    )
+
+                ], scroll=ft.ScrollMode.AUTO, spacing=12),
                 padding=20
             )
         )
@@ -225,22 +316,60 @@ class OCRApp:
             return f"✅ {self.gpu_info['name']} ({self.gpu_info['vram_gb']}GB VRAM)"
         else:
             return "❌ GPU não detectada - Modo GPU indisponível"
+
+    def _resolve_theme_mode(self, value):
+        """Resolve theme mode from config to Flet ThemeMode."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized == "dark":
+                return ft.ThemeMode.DARK
+            if normalized == "light":
+                return ft.ThemeMode.LIGHT
+            return ft.ThemeMode.SYSTEM
+        return value
     
-    def on_pdf_selected(self, e: ft.FilePickerResultEvent):
-        """PDF selection callback"""
-        if e.files:
-            self.pdf_path = e.files[0].path
+    async def handle_pick_pdf(self, e):
+        """Open file dialog and select a PDF"""
+        files = await self.pdf_picker.pick_files(
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["pdf"],
+        )
+        if files and files[0].path:
+            self.pdf_path = files[0].path
             self.pdf_path_field.value = self.pdf_path
             self._update_process_button()
             self.page.update()
-    
-    def on_folder_selected(self, e: ft.FilePickerResultEvent):
-        """Folder selection callback"""
-        if e.path:
-            self.output_folder = e.path
+
+    async def handle_pick_folder(self, e):
+        """Open folder dialog and select output directory"""
+        path = await self.folder_picker.get_directory_path()
+        if path:
+            self.output_folder = path
             self.output_folder_field.value = self.output_folder
             self._update_process_button()
             self.page.update()
+
+    def on_save_log_clicked(self, e):
+        """Save log to a text file in the selected output folder"""
+        if not self.output_folder:
+            self.log_message("❌ Pasta de destino nao selecionada", ft.Colors.RED)
+            return
+
+        log_text = self.log_field.value.strip()
+        if not log_text:
+            self.log_message("⚠️ Log vazio. Nada para salvar.", ft.Colors.ORANGE)
+            return
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        log_filename = f"log_conversao_{timestamp}.txt"
+        output_path = Path(self.output_folder) / log_filename
+
+        try:
+            output_path.write_text(log_text, encoding="utf-8")
+            self.log_message(f"✅ Log salvo: {output_path}", ft.Colors.GREEN)
+        except Exception as exc:
+            logger.exception("Error saving log")
+            self.log_message(f"❌ Erro ao salvar log: {exc}", ft.Colors.RED)
     
     def on_mode_changed(self, e):
         """Processing mode change callback"""
@@ -248,7 +377,7 @@ class OCRApp:
         
         # Disable GPU mode if not available
         if self.selected_mode == ProcessingMode.GPU and not self.gpu_info['available']:
-            self.log_message("⚠️ GPU não disponível. Usando modo CPU.", ft.colors.ORANGE)
+            self.log_message("⚠️ GPU não disponível. Usando modo CPU.", ft.Colors.ORANGE)
             self.selected_mode = ProcessingMode.CPU
             self.mode_radio.value = ProcessingMode.CPU
         
@@ -264,6 +393,21 @@ class OCRApp:
     def _update_process_button(self):
         """Update process button state"""
         self.process_button.disabled = not (self.pdf_path and self.output_folder)
+
+    def _get_mode_suffix(self) -> str:
+        """Get a stable suffix for the selected processing mode."""
+        if isinstance(self.selected_mode, ProcessingMode):
+            return self.selected_mode.value
+        return str(self.selected_mode).strip().lower()
+
+    def _describe_page_ocr(self, page_data: dict, backend: str) -> str:
+        """Describe OCR method applied for a page."""
+        page_type = page_data.get('type', 'unknown')
+        if page_type == 'native':
+            return "nativa (sem OCR)"
+        if page_type == 'scanned':
+            return f"OCR {backend}"
+        return "tipo desconhecido"
     
     def on_process_clicked(self, e):
         """Process button callback"""
@@ -272,18 +416,19 @@ class OCRApp:
         
         # Validations
         if not self.pdf_path or not Path(self.pdf_path).exists():
-            self.log_message("❌ PDF inválido ou não encontrado", ft.colors.RED)
+            self.log_message("❌ PDF inválido ou não encontrado", ft.Colors.RED)
             return
         
         if not self.output_folder:
-            self.log_message("❌ Pasta de destino não selecionada", ft.colors.RED)
+            self.log_message("❌ Pasta de destino não selecionada", ft.Colors.RED)
             return
         
         # Start processing in background thread
         self.is_processing = True
         self.process_button.disabled = True
         self.progress_bar.visible = True
-        self.log_column.controls.clear()
+        self.progress_text.value = "Processando PDF com Kreuzberg..."
+        self.log_field.value = ""
         self.page.update()
         
         thread = threading.Thread(target=self.process_pdf, daemon=True)
@@ -302,21 +447,39 @@ class OCRApp:
             engine = KreuzbergOCREngine(self.selected_mode, self.config)
             
             # Process PDF with Kreuzberg
-            self.update_progress(0.3, "Processando PDF com Kreuzberg...")
+            self.update_progress(0.1, "Processando PDF com Kreuzberg...")
             result = engine.process_pdf(self.pdf_path)
-            
-            self.update_progress(0.7, "Processamento concluído, gerando relatório...")
+
+            pages_data = result.get('pages', [])
+            total_pages = len(pages_data)
+            backend = result.get('metadata', {}).get('backend', 'ocr')
+
+            if total_pages:
+                self.update_progress(0.2, f"Processando paginas 0/{total_pages}...")
+                for idx, page_data in enumerate(pages_data, start=1):
+                    ocr_desc = self._describe_page_ocr(page_data, backend)
+                    self.log_message(
+                        f"   Pagina {idx}/{total_pages}: {ocr_desc}"
+                    )
+                    progress = 0.2 + (0.6 * (idx / total_pages))
+                    self.update_progress(
+                        progress,
+                        f"Processando paginas {idx}/{total_pages}..."
+                    )
+            else:
+                self.update_progress(0.7, "Processamento concluido, gerando relatorio...")
             
             # Generate Markdown if requested
             if self.generate_markdown_check.value:
                 self.log_message("📝 Gerando arquivo Markdown...")
                 
                 converter = MarkdownConverter(self.config)
-                output_filename = f"{Path(self.pdf_path).stem}_ocr.md"
+                mode_suffix = self._get_mode_suffix()
+                output_filename = f"{Path(self.pdf_path).stem}_ocr_{mode_suffix}.md"
                 output_path = Path(self.output_folder) / output_filename
                 
                 md_path = converter.convert_to_markdown(result, str(output_path))
-                self.log_message(f"✅ Markdown salvo: {md_path}", ft.colors.GREEN)
+                self.log_message(f"✅ Markdown salvo: {md_path}", ft.Colors.GREEN)
             
             # Display statistics
             total_time = time.time() - start_time
@@ -324,7 +487,7 @@ class OCRApp:
             
             self.log_message(
                 f"\n🎉 Processamento concluído em {total_time:.2f}s!",
-                ft.colors.GREEN
+                ft.Colors.GREEN
             )
             
             # Statistics text
@@ -339,11 +502,11 @@ class OCRApp:
             )
             self.update_stats(stats_text)
             
-            self.update_progress(1.0, "✅ Concluído!")
+            self.update_progress(1.0, "✅ Concluido!")
             
         except Exception as e:
             logger.exception("Error processing PDF")
-            self.log_message(f"❌ Erro: {str(e)}", ft.colors.RED)
+            self.log_message(f"❌ Erro: {str(e)}", ft.Colors.RED)
             self.update_progress(0, "❌ Erro no processamento")
         
         finally:
@@ -353,12 +516,11 @@ class OCRApp:
     
     def log_message(self, message: str, color=None):
         """Add message to log"""
-        self.log_column.controls.append(
-            ft.Text(message, size=12, color=color)
-        )
-        # Auto-scroll to bottom
-        if len(self.log_column.controls) > 20:
-            self.log_column.controls.pop(0)
+        current = self.log_field.value or ""
+        if current:
+            self.log_field.value = f"{current}\n{message}"
+        else:
+            self.log_field.value = message
         self.page.update()
     
     def update_progress(self, value: float, text: str):
@@ -369,7 +531,7 @@ class OCRApp:
     
     def update_stats(self, text: str):
         """Update statistics display"""
-        self.stats_text.value = text
+        self.stats_field.value = text
         self.page.update()
 
 

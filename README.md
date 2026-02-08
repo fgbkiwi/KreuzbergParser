@@ -52,11 +52,12 @@
 - **~0.2-0.5 página/segundo**
 
 #### 🚀 **GPU Mode** (Alta Qualidade)
-- PaddleOCR GPU-accelerated
+- EasyOCR GPU-accelerated
 - TrOCR para texto manuscrito (opcional)
 - Máxima acurácia
 - **~1-2 páginas/segundo**
 - **Requisitos**: NVIDIA GPU com 4GB+ VRAM
+> Nota: o modo GPU usa DPI 200 por padrão para reduzir VRAM e o `force_ocr` fica desativado. Ajuste em `config.py` se quiser mais qualidade (com mais consumo de GPU).
 
 ### 📝 Exportação Markdown
 - Documento estruturado
@@ -109,6 +110,11 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> Nota de compatibilidade: este `requirements.txt` esta fixado nas versoes usadas neste ambiente
+> (Windows + GTX 860M). Em outros PCs, especialmente com GPUs mais novas, talvez voce queira
+> reinstalar apenas o PyTorch com o CUDA correto para sua maquina. Veja a secao "GPU Setup"
+> abaixo.
+
 ### Passo 4: Instalar Tesseract OCR
 
 #### **Windows:**
@@ -133,9 +139,31 @@ brew install tesseract tesseract-lang
 # Verificar CUDA disponível
 python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
-# Se CUDA não disponível, instalar PyTorch com CUDA:
-# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# Se CUDA não disponível, instalar PyTorch com CUDA (escolha o cuXXX correto):
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 ```
+
+---
+
+## 🧩 GPU Setup (EasyOCR + TrOCR)
+
+O modo GPU usa **EasyOCR + TrOCR** via PyTorch. Voce precisa de:
+- Driver NVIDIA atualizado
+- PyTorch com suporte CUDA (wheel cuXXX)
+
+**Windows (exemplo CUDA 12.4):**
+```powershell
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+
+**Linux/Mac:** use o comando recomendado no site do PyTorch para o seu CUDA.
+
+**Verificacao rapida:**
+```bash
+python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
+```
+
+Se sua GPU for detectada, o modo GPU deve funcionar. Caso contrario, use CPU/Express.
 
 ---
 

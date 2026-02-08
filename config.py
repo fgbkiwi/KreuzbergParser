@@ -29,6 +29,17 @@ class Config:
     KREUZBERG_DETECT_TABLES = True
     KREUZBERG_EXTRACT_IMAGES = True
     KREUZBERG_LANGUAGE_DETECTION = True
+
+    # Backend-specific language code mapping
+    # Example: PaddleOCR and EasyOCR use "pt" instead of Tesseract's "por" for Portuguese.
+    BACKEND_LANGUAGE_MAP = {
+        "paddleocr": {
+            "por": "pt"
+        },
+        "easyocr": {
+            "por": "pt"
+        }
+    }
     
     # ===== HANDWRITING DETECTION =====
     # Custom TrOCR for handwriting (only custom code needed)
@@ -39,13 +50,14 @@ class Config:
     # ===== OCR MODE CONFIGURATIONS =====
     MODE_CONFIGS = {
         ProcessingMode.GPU: {
-            "backend": "paddleocr",  # GPU-accelerated
+            "backend": "easyocr",  # GPU-accelerated
             "use_gpu": True,
             "batch_size": 4,
-            "dpi": 300,
+            "dpi": 200,
             "detect_tables": True,
             "language": "por",
-            "enable_trocr": True  # Enable handwriting detection
+            "enable_trocr": True,  # Enable handwriting detection
+            "force_ocr": False
         },
         ProcessingMode.CPU: {
             "backend": "tesseract",  # Fast CPU
@@ -53,7 +65,8 @@ class Config:
             "dpi": 300,
             "detect_tables": True,
             "language": "por",
-            "enable_trocr": False  # Too slow on CPU
+            "enable_trocr": False,  # Too slow on CPU
+            "force_ocr": False
         },
         ProcessingMode.EXPRESS: {
             "backend": "tesseract",
@@ -62,12 +75,13 @@ class Config:
             "detect_tables": False,
             "language": "por",
             "enable_trocr": False,
-            "skip_preprocessing": True
+            "skip_preprocessing": True,
+            "force_ocr": False
         }
     }
     
     # ===== GPU SETTINGS =====
-    MIN_VRAM_GB = 4  # Minimum VRAM for GPU mode
+    MIN_VRAM_GB = 2  # Minimum VRAM for GPU mode. Original value was 4. Lower values can cause OOM or slower/unstable runs.
     
     # ===== MARKDOWN SETTINGS =====
     INCLUDE_METADATA = True
@@ -83,8 +97,8 @@ class Config:
     LOG_TO_CONSOLE = True
     
     # ===== UI SETTINGS =====
-    WINDOW_WIDTH = 900
-    WINDOW_HEIGHT = 750
+    WINDOW_WIDTH = 1100
+    WINDOW_HEIGHT = 830
     WINDOW_TITLE = "OCR Inteligente para PDFs Judiciais (Powered by Kreuzberg)"
     THEME_MODE = "light"
     

@@ -60,7 +60,7 @@ intelligent_ocr_system/
 | **Correção de perspectiva** | ✅ Completo | Kreuzberg nativo |
 | **Deskewing (rotação)** | ✅ Completo | Kreuzberg nativo |
 | **3 Modos (GPU/CPU/Express)** | ✅ Completo | Config.py + Engine |
-| **OCR multi-engine** | ✅ Completo | Tesseract + PaddleOCR |
+| **OCR multi-engine** | ✅ Completo | Tesseract + EasyOCR |
 | **TrOCR manuscrito** | ✅ Completo | handwriting_detector.py |
 | **Detecção de tabelas** | ✅ Completo | Kreuzberg nativo |
 | **Interface Flet** | ✅ Completo | ui/app.py |

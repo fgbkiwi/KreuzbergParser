@@ -72,8 +72,6 @@ numpy==1.24.3
 Pillow==10.1.0
 pytesseract==0.3.10
 easyocr==1.7.0
-paddlepaddle-gpu==2.6.0
-paddleocr==2.7.0.3
 torch==2.1.0
 torchvision==0.16.0
 transformers==4.35.0
@@ -82,12 +80,13 @@ markdown==3.5.1
 tqdm==4.66.1
 psutil==5.9.6
 ```
-**Total: 15 dependências principais**
+**Total: 13 dependências principais**
 
 **Com Kreuzberg:**
 ```
 kreuzberg==0.6.0          # ← Substitui 7 bibliotecas acima
 pytesseract==0.3.10       # Backend OCR
+easyocr==1.7.0            # OCR GPU via PyTorch
 torch==2.1.0              # Apenas para TrOCR opcional
 torchvision==0.16.0       # Apenas para TrOCR opcional
 transformers==4.35.0      # Apenas para TrOCR opcional
@@ -96,7 +95,7 @@ pillow==10.1.0            # Utilitário imagem
 tqdm==4.66.1              # Progress bars
 psutil==5.9.6             # System info
 ```
-**Total: 9 dependências (40% menos)**
+**Total: 10 dependências (23% menos)**
 
 ### Camadas de Abstração
 

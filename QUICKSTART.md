@@ -165,16 +165,19 @@ brew install tesseract tesseract-lang
    nvidia-smi
    ```
 
-2. CUDA instalado?
+2. PyTorch com CUDA?
    ```bash
-   nvcc --version
+   pip uninstall torch torchvision torchaudio
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
    ```
 
-3. PyTorch com CUDA?
-   ```bash
-   pip uninstall torch torchvision
-   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-   ```
+> Nota: o modo GPU usa EasyOCR + TrOCR via PyTorch. O CUDA Toolkit (nvcc) nao e necessario
+> para executar o projeto; basta o driver NVIDIA e o wheel CUDA correto do PyTorch.
+
+### ❌ Erro: "CUDA out of memory" (GPU mode)
+
+**Solução rápida:** o modo GPU usa DPI 200 e `force_ocr` desativado por padrão. Se ainda estourar VRAM,
+reduza o DPI em `config.py` ou use CPU/Express.
 
 ### ❌ Interface não abre
 
