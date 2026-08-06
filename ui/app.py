@@ -189,7 +189,7 @@ class OCRApp:
                     # File selection
                     ft.Container(
                         padding=12,
-                        border=ft.border.all(1, ft.Colors.GREY_400),
+                        border=ft.Border.all(1, ft.Colors.GREY_400),
                         border_radius=5,
                         bgcolor=ft.Colors.GREY_50,
                         content=ft.Column([
@@ -220,7 +220,7 @@ class OCRApp:
                         ft.Container(
                             expand=55,
                             padding=10,
-                            border=ft.border.all(1, ft.Colors.GREY_400),
+                            border=ft.Border.all(1, ft.Colors.GREY_400),
                             border_radius=5,
                             bgcolor=ft.Colors.BLUE_50,
                             content=ft.Column([
@@ -231,7 +231,7 @@ class OCRApp:
                         ft.Container(
                             expand=45,
                             padding=10,
-                            border=ft.border.all(1, ft.Colors.GREY_400),
+                            border=ft.Border.all(1, ft.Colors.GREY_400),
                             border_radius=5,
                             bgcolor=ft.Colors.GREEN_50,
                             content=ft.Column([
@@ -266,7 +266,7 @@ class OCRApp:
                             expand=2,
                             height=240,
                             padding=10,
-                            border=ft.border.all(1, ft.Colors.GREY_400),
+                            border=ft.Border.all(1, ft.Colors.GREY_400),
                             border_radius=5,
                             bgcolor=ft.Colors.AMBER_50,
                             content=ft.Column([
@@ -282,7 +282,7 @@ class OCRApp:
                             expand=1,
                             height=240,
                             padding=10,
-                            border=ft.border.all(1, ft.Colors.GREY_400),
+                            border=ft.Border.all(1, ft.Colors.GREY_400),
                             border_radius=5,
                             bgcolor=ft.Colors.TEAL_50,
                             content=ft.Column([
@@ -436,10 +436,16 @@ class OCRApp:
     
     def process_pdf(self):
         """Process PDF (runs in background thread)"""
+        pdf_path = self.pdf_path
+        output_folder = self.output_folder
+        if not pdf_path or not output_folder:
+            self.log_message("❌ PDF ou pasta de destino inválidos", ft.Colors.RED)
+            return
+
         try:
             start_time = time.time()
             
-            self.log_message(f"🚀 Iniciando processamento: {Path(self.pdf_path).name}")
+            self.log_message(f"🚀 Iniciando processamento: {Path(pdf_path).name}")
             self.log_message(f"   Modo: {self.selected_mode}")
             self.log_message(f"   Powered by Kreuzberg")
             
@@ -448,7 +454,7 @@ class OCRApp:
             
             # Process PDF with Kreuzberg
             self.update_progress(0.1, "Processando PDF com Kreuzberg...")
-            result = engine.process_pdf(self.pdf_path)
+            result = engine.process_pdf(pdf_path)
 
             pages_data = result.get('pages', [])
             total_pages = len(pages_data)
@@ -475,8 +481,8 @@ class OCRApp:
                 
                 converter = MarkdownConverter(self.config)
                 mode_suffix = self._get_mode_suffix()
-                output_filename = f"{Path(self.pdf_path).stem}_ocr_{mode_suffix}.md"
-                output_path = Path(self.output_folder) / output_filename
+                output_filename = f"{Path(pdf_path).stem}_ocr_{mode_suffix}.md"
+                output_path = Path(output_folder) / output_filename
                 
                 md_path = converter.convert_to_markdown(result, str(output_path))
                 self.log_message(f"✅ Markdown salvo: {md_path}", ft.Colors.GREEN)

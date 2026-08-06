@@ -1,0 +1,16 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "include": [
+    "."
+  ],
+  "exclude": [
+    ".venv",
+    "**/__pycache__",
+    "temp",
+    "output",
+    "logs",
+    "tessdata"
+  ]
+}

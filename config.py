@@ -22,6 +22,9 @@ class Config:
     TEMP_DIR = BASE_DIR / "temp"
     LOG_DIR = BASE_DIR / "logs"
     OUTPUT_DIR = BASE_DIR / "output"
+    # Local tessdata for Kreuzberg's embedded Tesseract (por/eng traineddata)
+    TESSDATA_DIR = BASE_DIR / "tessdata"
+    TESSERACT_LANGUAGES = ("por", "eng")
     
     # ===== KREUZBERG CONFIGURATION =====
     # Kreuzberg handles most thresholds automatically
@@ -108,6 +111,7 @@ class Config:
         cls.TEMP_DIR.mkdir(exist_ok=True)
         cls.LOG_DIR.mkdir(exist_ok=True)
         cls.OUTPUT_DIR.mkdir(exist_ok=True)
+        cls.TESSDATA_DIR.mkdir(exist_ok=True)
     
     @classmethod
     def get_mode_config(cls, mode: ProcessingMode) -> dict:

@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.logger import setup_logger
+from utils.tessdata import ensure_tessdata
 from config import Config
 from ui.app import run_app
 
@@ -32,6 +33,15 @@ def main():
     logger.info("⚡ Performance: 3-5x faster with Rust core")
     logger.info("📦 Formats: 50+ file formats supported")
     logger.info("")
+
+    # Kreuzberg embeds Tesseract; point it at local traineddata (por/eng)
+    try:
+        ensure_tessdata(config.TESSDATA_DIR, config.TESSERACT_LANGUAGES)
+    except Exception:
+        logger.exception(
+            "Não foi possível preparar os dados de idioma do Tesseract. "
+            "O OCR em páginas escaneadas pode falhar."
+        )
     
     # Log GPU status
     from utils.gpu_detector import gpu_detector

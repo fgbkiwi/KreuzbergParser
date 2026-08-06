@@ -17,6 +17,7 @@ except ImportError:
 
 from config import Config, ProcessingMode
 from utils.gpu_detector import gpu_detector
+from utils.tessdata import ensure_tessdata
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,12 @@ class KreuzbergOCREngine:
         
         logger.info(f"Kreuzberg OCR Engine initialized in {self.mode} mode")
         logger.info(f"Backend: {self.mode_config.get('backend', 'tesseract')}")
+
+        if self.mode_config.get('backend', 'tesseract') == 'tesseract':
+            try:
+                ensure_tessdata(self.config.TESSDATA_DIR, self.config.TESSERACT_LANGUAGES)
+            except Exception as exc:
+                logger.warning("Tessdata setup failed: %s", exc)
     
     def process_pdf(self, pdf_path: str) -> Dict:
         """
@@ -73,16 +80,11 @@ class KreuzbergOCREngine:
         
         try:
             # Configure Kreuzberg extraction
-            extraction_config, easyocr_kwargs, paddleocr_kwargs = self._build_extraction_config()
+            extraction_config, easyocr_kwargs = self._build_extraction_config()
             
             # Extract using Kreuzberg (replaces all custom extraction code)
             try:
-                result = kreuzberg.extract_file_sync(
-                    str(pdf_path),
-                    config=extraction_config,
-                    easyocr_kwargs=easyocr_kwargs,
-                    paddleocr_kwargs=paddleocr_kwargs,
-                )
+                result = self._extract_with_kreuzberg(pdf_path, extraction_config, easyocr_kwargs)
             except Exception as exc:
                 error_text = str(exc)
                 if self.mode == ProcessingMode.GPU and "easyocr" in error_text.lower():
@@ -92,13 +94,8 @@ class KreuzbergOCREngine:
                     )
                     self.mode = ProcessingMode.CPU
                     self.mode_config = self.config.get_mode_config(ProcessingMode.CPU)
-                    extraction_config, easyocr_kwargs, paddleocr_kwargs = self._build_extraction_config()
-                    result = kreuzberg.extract_file_sync(
-                        str(pdf_path),
-                        config=extraction_config,
-                        easyocr_kwargs=easyocr_kwargs,
-                        paddleocr_kwargs=paddleocr_kwargs,
-                    )
+                    extraction_config, easyocr_kwargs = self._build_extraction_config()
+                    result = self._extract_with_kreuzberg(pdf_path, extraction_config, easyocr_kwargs)
                 else:
                     raise
             
@@ -125,6 +122,15 @@ class KreuzbergOCREngine:
             logger.exception(f"Error processing PDF: {e}")
             raise
     
+    def _extract_with_kreuzberg(self, pdf_path: Path, extraction_config, easyocr_kwargs):
+        """Call Kreuzberg extract_file_sync with the current API surface."""
+        kwargs = {
+            "config": extraction_config,
+        }
+        if easyocr_kwargs is not None:
+            kwargs["easyocr_kwargs"] = easyocr_kwargs
+        return kreuzberg.extract_file_sync(str(pdf_path), **kwargs)
+
     def _build_extraction_config(self):
         """Build Kreuzberg extraction configuration"""
         language = self.mode_config.get('language', 'por')
@@ -134,7 +140,7 @@ class KreuzbergOCREngine:
         logger.info(f"OCR language for {backend}: {language}")
 
         easyocr_kwargs = None
-        paddleocr_kwargs = None
+        use_gpu = bool(self.mode_config.get('use_gpu', False))
 
         ocr_config = None
         if backend == 'tesseract':
@@ -148,12 +154,17 @@ class KreuzbergOCREngine:
                 tesseract_config=tesseract_config,
             )
         elif backend == 'paddleocr':
-            ocr_config = kreuzberg.OcrConfig(backend='paddleocr', language=language)
-            if self.mode_config.get('use_gpu', False):
-                paddleocr_kwargs = {"use_gpu": True}
+            ocr_config = kreuzberg.OcrConfig(
+                backend='paddleocr',
+                language=language,
+                paddle_ocr_config=kreuzberg.PaddleOcrConfig(
+                    language=language,
+                    enable_table_detection=self.mode_config.get('detect_tables', True),
+                ),
+            )
         elif backend == 'easyocr':
             ocr_config = kreuzberg.OcrConfig(backend='easyocr', language=language)
-            if self.mode_config.get('use_gpu', False):
+            if use_gpu:
                 easyocr_kwargs = {"use_gpu": True}
 
         language_detection = kreuzberg.LanguageDetectionConfig(
@@ -167,16 +178,21 @@ class KreuzbergOCREngine:
             extract_images=self.config.KREUZBERG_EXTRACT_IMAGES
         )
 
+        acceleration = None
+        if use_gpu:
+            acceleration = kreuzberg.AccelerationConfig(provider="cuda")
+
         config = kreuzberg.ExtractionConfig(
             ocr=ocr_config,
             language_detection=language_detection,
             images=images,
             pdf_options=pdf_options,
             force_ocr=self.mode_config.get('force_ocr', False),
+            acceleration=acceleration,
         )
 
         logger.debug("Kreuzberg config built")
-        return config, easyocr_kwargs, paddleocr_kwargs
+        return config, easyocr_kwargs
     
     def _convert_kreuzberg_result(self, result) -> List[Dict]:
         """

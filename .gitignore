@@ -6,6 +6,11 @@ log_conversao_*.txt
 temp/
 *.tmp
 
+# Tesseract language data (downloaded on first run)
+tessdata/
+*.traineddata
+*.traineddata.partial
+
 # Python cache
 __pycache__/
 *.py[cod]
