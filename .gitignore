@@ -1,6 +1,7 @@
 # Logs directory for OCR processing
 *.log
 log_conversao_*.txt
+*_log_conversao_*.txt
 
 # Temporary files
 temp/

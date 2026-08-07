@@ -32,6 +32,11 @@ class Config:
     KREUZBERG_DETECT_TABLES = True
     KREUZBERG_EXTRACT_IMAGES = True
     KREUZBERG_LANGUAGE_DETECTION = True
+    # Prefer physical PDF page boundaries over judicial "Fls.:" markers when
+    # Kreuzberg does not return usable per-page content.
+    USE_PHYSICAL_PAGE_EXTRACTION = True
+    # Pages with less native text than this threshold may need OCR.
+    MIN_NATIVE_PAGE_CHARS = 80
 
     # Backend-specific language code mapping
     # Example: PaddleOCR and EasyOCR use "pt" instead of Tesseract's "por" for Portuguese.

@@ -17,6 +17,7 @@ except ImportError:
 
 from config import Config, ProcessingMode
 from utils.gpu_detector import gpu_detector
+from utils.pdf_pages import extract_pages_text, poppler_available
 from utils.tessdata import ensure_tessdata
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,24 @@ class KreuzbergOCREngine:
         logger.info(f"Processing PDF: {pdf_path.name}")
         
         try:
+            if self._should_use_physical_page_extraction():
+                pages_data = self._extract_physical_pages(pdf_path)
+                ocr_pages = [page for page in pages_data if page.get('type') == 'scanned']
+                if not ocr_pages and not self.mode_config.get('force_ocr', False):
+                    total_time = time.time() - start_time
+                    stats = self._calculate_statistics(pages_data, total_time)
+                    return {
+                        'pages': pages_data,
+                        'statistics': stats,
+                        'metadata': {
+                            'filename': pdf_path.name,
+                            'total_pages': stats.get('total_pages', len(pages_data)),
+                            'mode': self.mode,
+                            'backend': self.mode_config.get('backend'),
+                            'processing_time': total_time
+                        }
+                    }
+
             # Configure Kreuzberg extraction
             extraction_config, easyocr_kwargs = self._build_extraction_config()
             
@@ -100,7 +119,7 @@ class KreuzbergOCREngine:
                     raise
             
             # Convert to our format
-            pages_data = self._convert_kreuzberg_result(result)
+            pages_data = self._convert_kreuzberg_result(result, pdf_path)
             
             # Statistics
             total_time = time.time() - start_time
@@ -177,6 +196,10 @@ class KreuzbergOCREngine:
         pdf_options = kreuzberg.PdfConfig(
             extract_images=self.config.KREUZBERG_EXTRACT_IMAGES
         )
+        pages = kreuzberg.PageConfig(
+            extract_pages=True,
+            insert_page_markers=False,
+        )
 
         acceleration = None
         if use_gpu:
@@ -187,19 +210,25 @@ class KreuzbergOCREngine:
             language_detection=language_detection,
             images=images,
             pdf_options=pdf_options,
+            pages=pages,
             force_ocr=self.mode_config.get('force_ocr', False),
             acceleration=acceleration,
         )
 
         logger.debug("Kreuzberg config built")
         return config, easyocr_kwargs
+
+    def _should_use_physical_page_extraction(self) -> bool:
+        """Return True when Poppler-based physical page extraction is enabled."""
+        return bool(self.config.USE_PHYSICAL_PAGE_EXTRACTION and poppler_available())
     
-    def _convert_kreuzberg_result(self, result) -> List[Dict]:
+    def _convert_kreuzberg_result(self, result, pdf_path: Path) -> List[Dict]:
         """
         Convert Kreuzberg result to our page format
         
         Args:
             result: Kreuzberg extraction result
+            pdf_path: Source PDF path for physical page fallback
         
         Returns:
             List of page dictionaries
@@ -208,11 +237,21 @@ class KreuzbergOCREngine:
 
         try:
             kreuzberg_pages = self._extract_kreuzberg_pages(result)
-            for idx, page_result in enumerate(kreuzberg_pages):
-                page_data = self._convert_page(page_result, idx + 1)
-                pages.append(page_data)
-
-            pages = self._normalize_page_sequence(pages)
+            if self._kreuzberg_pages_have_text(kreuzberg_pages):
+                for idx, page_result in enumerate(kreuzberg_pages):
+                    page_data = self._convert_page(page_result, idx + 1)
+                    pages.append(page_data)
+                pages = self._normalize_page_sequence(pages)
+            elif self.config.USE_PHYSICAL_PAGE_EXTRACTION and poppler_available():
+                logger.info(
+                    "Kreuzberg returned no usable per-page text; using physical PDF page extraction"
+                )
+                pages = self._extract_physical_pages(pdf_path)
+            else:
+                for idx, page_result in enumerate(kreuzberg_pages):
+                    page_data = self._convert_page(page_result, idx + 1)
+                    pages.append(page_data)
+                pages = self._normalize_page_sequence(pages)
 
         except Exception as e:
             logger.error(f"Error converting Kreuzberg result: {e}")
@@ -223,6 +262,47 @@ class KreuzbergOCREngine:
                 'has_tables': False,
                 'language': None,
                 'processing_time': 0
+            })
+
+        return pages
+
+    def _kreuzberg_pages_have_text(self, pages: List) -> bool:
+        """Return True when Kreuzberg returned per-page text for most pages."""
+        if not pages:
+            return False
+
+        text_lengths = []
+        for page_result in pages:
+            if isinstance(page_result, dict):
+                text = page_result.get('text', '')
+            else:
+                text = getattr(page_result, 'text', '')
+            text_lengths.append(len(str(text or '').strip()))
+
+        if not text_lengths:
+            return False
+
+        populated = sum(1 for length in text_lengths if length > 0)
+        return populated >= max(1, int(len(text_lengths) * 0.5))
+
+    def _extract_physical_pages(self, pdf_path: Path) -> List[Dict]:
+        """Extract one entry per physical PDF page using Poppler."""
+        page_texts = extract_pages_text(pdf_path)
+        min_native_chars = self.config.MIN_NATIVE_PAGE_CHARS
+        pages = []
+
+        for page_num, text in enumerate(page_texts, start=1):
+            stripped = text.strip()
+            is_native = len(stripped) >= min_native_chars
+            pages.append({
+                'page': page_num,
+                'marker_page_number': self._extract_page_marker(stripped),
+                'text': stripped,
+                'type': 'native' if is_native else 'scanned',
+                'has_tables': False,
+                'language': None,
+                'word_count': len(stripped.split()) if stripped else 0,
+                'char_count': len(stripped) if stripped else 0,
             })
 
         return pages

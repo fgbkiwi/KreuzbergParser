@@ -361,7 +361,7 @@ class OCRApp:
             return
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        log_filename = f"log_conversao_{timestamp}.txt"
+        log_filename = self._get_log_filename(timestamp)
         output_path = Path(self.output_folder) / log_filename
 
         try:
@@ -399,6 +399,12 @@ class OCRApp:
         if isinstance(self.selected_mode, ProcessingMode):
             return self.selected_mode.value
         return str(self.selected_mode).strip().lower()
+
+    def _get_log_filename(self, timestamp: str) -> str:
+        """Build log filename with PDF stem prefix when available."""
+        if self.pdf_path:
+            return f"{Path(self.pdf_path).stem}_log_conversao_{timestamp}.txt"
+        return f"log_conversao_{timestamp}.txt"
 
     def _describe_page_ocr(self, page_data: dict, backend: str) -> str:
         """Describe OCR method applied for a page."""
