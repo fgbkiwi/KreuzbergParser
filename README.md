@@ -99,32 +99,63 @@ cd /caminho/para/KreuzbergParser
 
 ### Passo 2: Criar Ambiente Virtual
 
+Recomendamos **Python 3.12** e **[uv](https://docs.astral.sh/uv/)** para instalação reproduzível.
+
+#### Windows (recomendado — uv)
+
+```powershell
+# Criar ambiente (.venv na raiz do projeto)
+uv venv .venv --python 3.12
+
+# Ativar
+.\.venv\Scripts\Activate.ps1
+```
+
+#### Linux / macOS
+
 ```bash
-# Criar ambiente (Python 3.12)
 python3.12 -m venv .venv
-
-# Ativar ambiente
-# Windows:
-.venv\Scripts\activate
-
-# Linux/Mac:
 source .venv/bin/activate
 ```
 
 ### Passo 3: Instalar Dependências
 
-```bash
-# Preferido neste repo (uv + índice PyTorch cu130):
-./scripts/update_deps.sh --sync --cuda cu130
+O fluxo depende do sistema operacional. Veja a seção
+[Dependências no Windows (uv)](#-dependências-no-windows-uv) para o motivo dessa diferença.
 
-# Ou:
+#### Windows (uv)
+
+```powershell
+# 1) PyTorch com CUDA (ajuste cu130 conforme sua GPU — veja GPU Setup)
+uv pip install torch torchvision `
+  --python .venv\Scripts\python.exe `
+  --index-url https://download.pytorch.org/whl/cu130
+
+# 2) Demais dependências diretas do projeto
+uv pip install -r requirements.in --python .venv\Scripts\python.exe
+```
+
+#### Linux / macOS
+
+```bash
+# Sincroniza o lockfile gerado pelo script do projeto
 uv pip sync requirements.txt \
   --extra-index-url https://download.pytorch.org/whl/cu130 \
   --index-strategy unsafe-best-match
 ```
 
+Preferido neste repo (Linux / macOS, uv + índice PyTorch cu130):
+
+```bash
+./scripts/update_deps.sh --sync --cuda cu130
+```
+
 > Regras para não misturar torch CPU, Paddle e vLLM no mesmo venv:
 > [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md) e [`GPU_SETUP.md`](GPU_SETUP.md).
+
+> No **Windows**, `pip install -r requirements.txt` e `uv pip sync requirements.txt`
+> falham porque o lockfile inclui pacotes NVIDIA (`nvidia-cufile`, etc.) compilados
+> apenas para Linux. Use o fluxo em duas etapas (`torch` + `requirements.in`) descrito acima.
 
 ### Passo 4: Instalar Tesseract OCR
 
@@ -177,6 +208,75 @@ Notas históricas GTX 860M / cu124: [`CUDA_SETUP_GTX860M.md`](CUDA_SETUP_GTX860M
 
 ---
 
+## 🪟 Dependências no Windows (uv)
+
+O arquivo `requirements.txt` é **gerado automaticamente** no Linux pelo script
+`scripts/update_deps.sh`. Ele fixa versões exatas de todo o grafo de dependências (incluindo
+PyTorch CUDA e bibliotecas NVIDIA usadas apenas em wheels Linux). Por isso, o ambiente Windows
+segue um caminho ligeiramente diferente.
+
+### Por que não usar `requirements.txt` diretamente no Windows?
+
+Ao rodar:
+
+```powershell
+uv pip sync requirements.txt --extra-index-url https://download.pytorch.org/whl/cu130
+```
+
+o resolver tenta instalar pacotes como `nvidia-cufile`, que **não possuem wheel para
+`win_amd64`**. A instalação falha mesmo que o restante do stack seja compatível.
+
+**Solução:** instalar PyTorch a partir do índice oficial CUDA e, em seguida, resolver as
+dependências diretas a partir de `requirements.in` (sem os pacotes NVIDIA exclusivos do Linux).
+
+### Grafo típico no Windows
+
+Após a instalação em duas etapas, parte das bibliotecas entra como dependência transitiva do
+PyTorch:
+
+```
+torch 2.13.0+cu130
+├── filelock
+├── fsspec
+├── setuptools
+├── typing-extensions
+└── sympy → mpmath
+
+transformers
+└── tokenizers  (intervalo declarado: >=0.22.0, <=0.23.0)
+```
+
+Pacotes como `numpy` e `pillow` também ficam na versão resolvida naquele momento, embora
+`easyocr`, `transformers` e outros consumidores aceitem faixas mais amplas.
+
+### `uv pip list --outdated` — versões “desatualizadas”
+
+É normal ver pacotes marcados como outdated mesmo com o ambiente saudável. O comando compara o
+que está **instalado** com a **última versão no PyPI**, não com o que o projeto testou.
+
+| Pacote | Por que pode aparecer desatualizado |
+|--------|-------------------------------------|
+| `filelock`, `fsspec`, `setuptools`, `typing-extensions`, `mpmath` | Instalados na versão resolvida junto com `torch`; o PyTorch declara requisitos **sem teto** (`filelock`, `fsspec`, …) |
+| `numpy`, `pillow` | Versão fixada na resolução inicial; não há conflito explícito com versões mais novas na maioria dos casos |
+| `tokenizers` | Limitado pelo `transformers` atual (`<=0.23.0`); a “Latest” no PyPI (`0.23.1`) pode estar **fora** do intervalo suportado |
+
+Isso **não indica**, por si só, incompatibilidade — na maioria dos casos são **pins de
+instalação** para reproducibilidade, não bloqueios rígidos.
+
+### Boas práticas no Windows
+
+- **Não atualize pacotes soltos** do stack CUDA (`torch`, `numpy`, etc.) sem re-resolver tudo.
+- Para atualizar dependências diretas com segurança:
+  ```powershell
+  uv pip install -r requirements.in --python .venv\Scripts\python.exe --upgrade
+  ```
+- Para regenerar o lockfile completo (incluindo pins Linux), use `./scripts/update_deps.sh` em
+  Linux ou WSL.
+- Escolha o índice CUDA (`cu124`, `cu130`, …) conforme sua GPU; GPUs mais novas (Blackwell /
+  RTX 50) exigem índices recentes como `cu130`.
+
+---
+
 ## 🚀 Uso
 
 ### Iniciar Aplicação
@@ -214,7 +314,8 @@ KreuzbergParser/
 │
 ├── main.py                      # Entry point
 ├── config.py                    # Configuração (modos, VLM, templates)
-├── requirements.txt             # Dependências Python (OCR .venv)
+├── requirements.in              # Dependências diretas (editar aqui)
+├── requirements.txt             # Lockfile com pins (Linux; gerado por update_deps.sh)
 │
 ├── core/
 │   ├── kreuzberg_engine.py     # Engine OCR + roteamento template/VLM
