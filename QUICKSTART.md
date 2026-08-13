@@ -4,112 +4,43 @@
 
 Antes de começar, certifique-se de ter:
 
-- ✅ Python 3.9 ou superior instalado
-- ✅ pip funcionando
-- ✅ Conexão com a internet (para baixar dependências)
+- ✅ Python **3.12**
+- ✅ `uv` (preferido) ou pip
+- ✅ Conexão com a internet (dependências / tessdata)
 
 ## 2️⃣ Instalação Passo a Passo
 
-### Windows
+### Windows / Linux / macOS
 
-```powershell
-# 1. Navegar até o diretório do projeto
-cd caminho\para\intelligent_ocr_system
-
-# 2. Criar ambiente virtual
-python -m venv venv
-
-# 3. Ativar ambiente virtual
-venv\Scripts\activate
-
-# 4. Atualizar pip
-python -m pip install --upgrade pip
-
-# 5. Instalar dependências
-pip install -r requirements.txt
-
-# 6. Instalar Tesseract OCR
-# Baixar e instalar de: https://github.com/UB-Mannheim/tesseract/wiki
-# Adicionar ao PATH: C:\Program Files\Tesseract-OCR
-
-# 7. Testar instalação
-python test_setup.py
-
-# 8. Executar aplicação
-python main.py
-```
-
-### Linux (Ubuntu/Debian)
+Na raiz do **KreuzbergParser** (Python 3.12):
 
 ```bash
-# 1. Navegar até o diretório do projeto
-cd /caminho/para/intelligent_ocr_system
-
-# 2. Criar ambiente virtual
-python3 -m venv venv
-
-# 3. Ativar ambiente virtual
-source venv/bin/activate
-
-# 4. Atualizar pip
-pip install --upgrade pip
-
-# 5. Instalar dependências
-pip install -r requirements.txt
-
-# 6. Instalar Tesseract OCR
-sudo apt update
-sudo apt install tesseract-ocr tesseract-ocr-por
-
-# 7. Testar instalação
-python test_setup.py
-
-# 8. Executar aplicação
-python main.py
+python3.12 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+./scripts/update_deps.sh --sync --cuda cu130
+.venv/bin/python main.py
 ```
 
-### macOS
+Kreuzberg embute Tesseract e baixa `por`/`eng` em `tessdata/` na primeira execução.
+No Cursor, selecione o interpretador **`.venv`**, não `.venv-nemotron`.
 
-```bash
-# 1. Navegar até o diretório do projeto
-cd /caminho/para/intelligent_ocr_system
-
-# 2. Criar ambiente virtual
-python3 -m venv venv
-
-# 3. Ativar ambiente virtual
-source venv/bin/activate
-
-# 4. Atualizar pip
-pip install --upgrade pip
-
-# 5. Instalar dependências
-pip install -r requirements.txt
-
-# 6. Instalar Tesseract OCR
-brew install tesseract tesseract-lang
-
-# 7. Testar instalação
-python test_setup.py
-
-# 8. Executar aplicação
-python main.py
-```
+**Nemotron Parse (opcional, venv isolado):** ver [`GPU_SETUP.md`](GPU_SETUP.md).
 
 ## 3️⃣ Primeiro Uso
 
 ### Interface Gráfica
 
-Quando executar `python main.py`, a interface gráfica abrirá automaticamente:
+Quando executar `.venv/bin/python main.py`, a interface gráfica abrirá automaticamente:
 
 1. **Selecionar PDF**: Clique no botão "📂 Selecionar PDF"
 2. **Escolher Destino**: Clique no botão "📁 Pasta Destino"
-3. **Modo de Processamento**: 
-   - Comece com ⚡ **Express** para teste rápido
-   - Use 💻 **CPU** para documentos complexos
-   - Use 🚀 **GPU** somente se tiver NVIDIA GPU (verifique no Status GPU)
-4. **Processar**: Clique em "🚀 PROCESSAR PDF"
-5. **Resultado**: Arquivo `.md` será salvo na pasta escolhida
+3. **Modo de Processamento**:
+   - ⚡ **Express (Rápido) - Tesseract 200 DPI** — teste rápido
+   - 💻 **CPU - Tesseract 300 DPI + tabelas** — documentos complexos sem GPU
+   - 🚀 **GPU - EasyOCR CUDA** — se o Status GPU indicar NVIDIA
+4. **VLM fallback**: Desligado, Qwen2.5-VL (Ollama) ou Nemotron Parse (vLLM)
+5. **Processar**: Clique em "🚀 PROCESSAR PDF"
+6. **Resultado**: `{stem}_ocr_{modo}_{modelo}.md` (ex. `_ocr_gpu_nemotron.md`)
 
 ### Primeira Execução - O que esperar
 
@@ -165,19 +96,19 @@ brew install tesseract tesseract-lang
    nvidia-smi
    ```
 
-2. PyTorch com CUDA?
+2. PyTorch com CUDA no `.venv`?
    ```bash
-   pip uninstall torch torchvision torchaudio
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+   .venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+   ./scripts/update_deps.sh --sync --cuda cu130
    ```
 
-> Nota: o modo GPU usa EasyOCR + TrOCR via PyTorch. O CUDA Toolkit (nvcc) nao e necessario
-> para executar o projeto; basta o driver NVIDIA e o wheel CUDA correto do PyTorch.
+> O modo GPU usa EasyOCR + TrOCR via PyTorch. O CUDA Toolkit (`nvcc`) **não** é necessário
+> para o KreuzbergParser. Só o servidor Nemotron Parse (vLLM/FlashInfer) precisa de
+> `./scripts/install_cuda_toolkit.sh`. Ver [`GPU_SETUP.md`](GPU_SETUP.md).
 
 ### ❌ Erro: "CUDA out of memory" (GPU mode)
 
-**Solução rápida:** o modo GPU usa DPI 200 e `force_ocr` desativado por padrão. Se ainda estourar VRAM,
-reduza o DPI em `config.py` ou use CPU/Express.
+**Solução rápida:** reduza o DPI em `config.py` (GPU usa 300 em formulários) ou use CPU/Express. Se o Nemotron estiver no ar, baixe `NEMOTRON_GPU_MEM` (ex. 0.60).
 
 ### ❌ Interface não abre
 
@@ -187,7 +118,7 @@ pip install --upgrade flet
 python main.py
 ```
 
-Se ainda não funcionar, verificar logs em `logs/ocr_*.log`
+Se ainda não funcionar, verificar logs em `logs/` e se o Cursor está usando `.venv` (não `.venv-nemotron`).
 
 ## 5️⃣ Teste Rápido com PDF
 
@@ -214,9 +145,9 @@ c.save()
 1. Executar: `python main.py`
 2. Selecionar seu PDF de teste
 3. Escolher pasta destino
-4. Modo: **Express** (mais rápido para teste)
+4. Modo: **Express (Rápido) - Tesseract 200 DPI**
 5. Clicar "Processar"
-6. Verificar arquivo `.md` gerado
+6. Verificar `{stem}_ocr_express_nenhum.md` (ou o sufixo do VLM escolhido)
 
 ## 6️⃣ Próximos Passos
 
@@ -231,16 +162,17 @@ Agora que o sistema está funcionando:
 ## 📚 Documentação Completa
 
 - **README.md** - Documentação completa do sistema
-- **[Kreuzberg Docs](https://docs.kreuzberg.dev/)** - Documentação da biblioteca OCR
-- **config.py** - Todas as configurações disponíveis
+- **GPU_SETUP.md** - GPU cu130, Ollama, Nemotron
+- **docs/DEPENDENCY_CONFLICTS.md** - o que não misturar
+- **config.py** - Modos, VLM, templates
 
 ## 🆘 Suporte
 
 Se encontrar problemas:
 
 1. ✅ Executar `python test_setup.py` para diagnóstico
-2. ✅ Verificar logs em `logs/ocr_*.log`
-3. ✅ Consultar seção Troubleshooting no README.md
+2. ✅ Verificar logs em `logs/` (`{CNJ}_ocr_{modo}_{modelo}_*.log` após processar)
+3. ✅ Consultar [`GPU_SETUP.md`](GPU_SETUP.md) e [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md)
 4. ✅ Revisar documentação do Kreuzberg
 
 ---

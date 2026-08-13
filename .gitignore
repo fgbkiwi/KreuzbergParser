@@ -2,6 +2,7 @@
 *.log
 log_conversao_*.txt
 *_log_conversao_*.txt
+logs/.last_dep_check
 
 # Temporary files
 temp/
@@ -37,6 +38,7 @@ wheels/
 # Virtual environment
 venv/
 .venv/
+.venv-nemotron/
 ENV/
 env/
 

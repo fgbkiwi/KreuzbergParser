@@ -39,31 +39,40 @@
 
 ### 🚀 Três Modos de Processamento
 
-#### ⚡ **Express Mode** (Mais Rápido)
+#### ⚡ **Express (Rápido) - Tesseract 200 DPI**
 - Tesseract OCR
 - Processamento mínimo
 - Ideal para documentos simples
 - **~0.5-1 página/segundo**
 
-#### 💻 **CPU Mode** (Padrão)
+#### 💻 **CPU - Tesseract 300 DPI + tabelas**
 - Tesseract OCR com pré-processamento
 - Correção de perspectiva e rotação
 - Detecção de tabelas
 - **~0.2-0.5 página/segundo**
 
-#### 🚀 **GPU Mode** (Alta Qualidade)
+#### 🚀 **GPU - EasyOCR CUDA**
 - EasyOCR GPU-accelerated
 - TrOCR para texto manuscrito (opcional)
 - Máxima acurácia
 - **~1-2 páginas/segundo**
-- **Requisitos**: NVIDIA GPU com 4GB+ VRAM
-> Nota: o modo GPU usa DPI 200 por padrão para reduzir VRAM e o `force_ocr` fica desativado. Ajuste em `config.py` se quiser mais qualidade (com mais consumo de GPU).
+- **Requisitos**: NVIDIA GPU (RTX 50 / CUDA 13 no alvo atual)
+- DPI de formulários: 300 (`config.py`)
+
+### 📋 Formulários trabalhistas + VLM local
+- Templates determinísticos (Tesseract TSV + geometria) para TRCT, ficha de registro, recibo e FGTS
+- Fallback VLM só em páginas de formulário/tabela, via endpoint OpenAI-compatível
+- Na UI: **Desligado**, **Qwen2.5-VL (Ollama)** ou **Nemotron Parse (vLLM)**
+- Nemotron corre em **`.venv-nemotron`** (não misturar com o `.venv` do OCR) — ver [`GPU_SETUP.md`](GPU_SETUP.md)
 
 ### 📝 Exportação Markdown
 - Documento estruturado
-- Metadados completos
-- Estatísticas de processamento
-- Informações por página
+- Metadados e estatísticas
+- Nome do arquivo inclui modo + modelo VLM, por exemplo:
+  - `Processo_…_ocr_gpu_nemotron.md`
+  - `Processo_…_ocr_gpu_qwen.md`
+  - `Processo_…_ocr_gpu_nenhum.md`
+- Logs de conversão e auditoria usam o mesmo sufixo; o log genérico da sessão ganha prefixo CNJ e sufixo ao clicar **PROCESSAR PDF**
 
 ---
 
@@ -72,48 +81,50 @@
 ### Requisitos do Sistema
 
 **Mínimos (Express/CPU):**
-- Python 3.9+
+- Python **3.12** (wheels CUDA; evitar ≥3.13)
 - 4GB RAM
-- Tesseract OCR
 
-**Recomendados (GPU):**
-- Python 3.9+
+**Recomendados (GPU / VLM local):**
+- Python 3.12
 - 16GB RAM
-- NVIDIA GPU com 6GB+ VRAM
-- CUDA 11.8+
+- NVIDIA GPU (alvo atual: RTX 50-series, driver 580+, PyTorch **cu130**)
+- Driver NVIDIA atualizado; o KreuzbergParser **não** precisa de `nvcc`
+- `nvcc` (CUDA Toolkit 13.0) só para o servidor Nemotron Parse / FlashInfer
 
 ### Passo 1: Clonar/Baixar Projeto
 
 ```bash
-cd /caminho/para/projeto
-cd intelligent_ocr_system
+cd /caminho/para/KreuzbergParser
 ```
 
 ### Passo 2: Criar Ambiente Virtual
 
 ```bash
-# Criar ambiente
-python -m venv venv
+# Criar ambiente (Python 3.12)
+python3.12 -m venv .venv
 
 # Ativar ambiente
 # Windows:
-venv\Scripts\activate
+.venv\Scripts\activate
 
 # Linux/Mac:
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 ### Passo 3: Instalar Dependências
 
 ```bash
-# Instalar pacotes Python
-pip install -r requirements.txt
+# Preferido neste repo (uv + índice PyTorch cu130):
+./scripts/update_deps.sh --sync --cuda cu130
+
+# Ou:
+uv pip sync requirements.txt \
+  --extra-index-url https://download.pytorch.org/whl/cu130 \
+  --index-strategy unsafe-best-match
 ```
 
-> Nota de compatibilidade: este `requirements.txt` esta fixado nas versoes usadas neste ambiente
-> (Windows + GTX 860M). Em outros PCs, especialmente com GPUs mais novas, talvez voce queira
-> reinstalar apenas o PyTorch com o CUDA correto para sua maquina. Veja a secao "GPU Setup"
-> abaixo.
+> Regras para não misturar torch CPU, Paddle e vLLM no mesmo venv:
+> [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md) e [`GPU_SETUP.md`](GPU_SETUP.md).
 
 ### Passo 4: Instalar Tesseract OCR
 
@@ -145,25 +156,24 @@ python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
 ---
 
-## 🧩 GPU Setup (EasyOCR + TrOCR)
+## 🧩 GPU Setup (EasyOCR + TrOCR + VLM)
 
-O modo GPU usa **EasyOCR + TrOCR** via PyTorch. Voce precisa de:
+Guia atual (RTX 50 / cu130, Nemotron, Ollama): **[`GPU_SETUP.md`](GPU_SETUP.md)**.
+
+O modo GPU usa **EasyOCR + TrOCR** via PyTorch no `.venv`. Você precisa de:
 - Driver NVIDIA atualizado
-- PyTorch com suporte CUDA (wheel cuXXX)
+- PyTorch `+cu130` (Blackwell / `sm_120`)
 
-**Windows (exemplo CUDA 12.4):**
-```powershell
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-```
-
-**Linux/Mac:** use o comando recomendado no site do PyTorch para o seu CUDA.
-
-**Verificacao rapida:**
 ```bash
-python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
+./scripts/update_deps.sh --sync --cuda cu130
+.venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
 ```
 
-Se sua GPU for detectada, o modo GPU deve funcionar. Caso contrario, use CPU/Express.
+No Cursor, o interpretador do `main.py` deve ser **`.venv/bin/python`**, não `.venv-nemotron` nem `/bin/python3`.
+
+**Nemotron Parse (opcional):** venv isolado + `nvcc` 13.0 — `./scripts/install_cuda_toolkit.sh` e `./scripts/start_nemotron_parse.sh`.
+
+Notas históricas GTX 860M / cu124: [`CUDA_SETUP_GTX860M.md`](CUDA_SETUP_GTX860M.md).
 
 ---
 
@@ -172,8 +182,7 @@ Se sua GPU for detectada, o modo GPU deve funcionar. Caso contrario, use CPU/Exp
 ### Iniciar Aplicação
 
 ```bash
-# Com ambiente virtual ativado
-python main.py
+.venv/bin/python main.py
 ```
 
 A interface gráfica será aberta automaticamente.
@@ -182,16 +191,17 @@ A interface gráfica será aberta automaticamente.
 
 1. **Selecionar PDF**: Clique em "📂 Selecionar PDF" e escolha o arquivo
 2. **Pasta Destino**: Clique em "📁 Pasta Destino" para escolher onde salvar
-3. **Escolher Modo**: 
-   - ⚡ Express (rápido)
-   - 💻 CPU (padrão)
-   - 🚀 GPU (alta qualidade - requer GPU NVIDIA)
-4. **Opções**:
+3. **Escolher Modo**:
+   - ⚡ Express (Rápido) - Tesseract 200 DPI
+   - 💻 CPU - Tesseract 300 DPI + tabelas
+   - 🚀 GPU - EasyOCR CUDA
+4. **VLM fallback** (formulários / tabelas): Desligado, Qwen2.5-VL (Ollama) ou Nemotron Parse (vLLM)
+5. **Opções**:
    - ✅ Gerar Markdown (recomendado)
-   - 🖋️ Detectar manuscrito (apenas GPU mode)
-5. **Processar**: Clique em "🚀 PROCESSAR PDF"
-6. **Aguardar**: Acompanhe o progresso no log
-7. **Resultado**: Arquivo `.md` será salvo na pasta destino
+   - 🖋️ Detectar manuscrito (apenas GPU)
+6. **Processar**: Clique em "🚀 PROCESSAR PDF"
+7. **Resultado**: `{stem}_ocr_{modo}_{modelo}.md` na pasta destino
+   (ex.: `_ocr_gpu_nemotron.md`, `_ocr_cpu_nenhum.md`)
 
 ---
 
@@ -200,27 +210,37 @@ A interface gráfica será aberta automaticamente.
 ### Estrutura do Projeto
 
 ```
-intelligent_ocr_system/
+KreuzbergParser/
 │
 ├── main.py                      # Entry point
-├── config.py                    # Configuração simplificada
-├── requirements.txt             # Dependências Python
+├── config.py                    # Configuração (modos, VLM, templates)
+├── requirements.txt             # Dependências Python (OCR .venv)
 │
-├── core/                        # Lógica principal (150 linhas)
-│   ├── kreuzberg_engine.py     # Engine OCR com Kreuzberg
-│   ├── handwriting_detector.py # TrOCR para manuscritos (opcional)
+├── core/
+│   ├── kreuzberg_engine.py     # Engine OCR + roteamento template/VLM
+│   ├── page_classifier.py      # nativa / híbrida / image_page
+│   ├── pje_sumario.py          # SUMÁRIO PJe
+│   ├── form_layout.py          # TSV Tesseract + grade
+│   ├── form_templates.py       # TRCT / ficha / recibo / FGTS
+│   ├── labor_forms.py          # Formatadores leves por tipo
+│   ├── vlm_ocr.py              # Cliente OpenAI-compatível (Qwen/Nemotron)
+│   ├── handwriting_detector.py # TrOCR (opcional)
 │   └── markdown_converter.py   # Conversão para Markdown
 │
-├── ui/                          # Interface Flet
-│   └── app.py                  # Aplicação gráfica
+├── ui/app.py                    # Interface Flet
+├── utils/                       # GPU, logging, tessdata, páginas PDF
+├── scripts/
+│   ├── update_deps.sh
+│   ├── setup_nemotron_venv.sh
+│   ├── start_nemotron_parse.sh
+│   ├── install_cuda_toolkit.sh
+│   └── compare_extraction.py
 │
-├── utils/                       # Utilitários
-│   ├── gpu_detector.py         # Detecção de GPU
-│   └── logger.py               # Sistema de logging
-│
-├── logs/                        # Logs de execução
-├── temp/                        # Arquivos temporários
-└── output/                      # Resultados (padrão)
+├── GPU_SETUP.md
+├── docs/DEPENDENCY_CONFLICTS.md
+├── logs/                        # ocr_*.log (renomeado com CNJ + sufixo)
+├── tessdata/                    # por/eng (baixado na 1ª execução)
+└── output/
 ```
 
 ### Fluxo de Processamento
@@ -232,12 +252,12 @@ PDF → Kreuzberg Engine → Detecção Automática
         │                             │
     Nativo                       Escaneado
         │                             │
-    Extração                      OCR Engine
-    Direta                      (Tesseract/Paddle)
+    Extração                      OCR + templates
+    Direta                      (Tesseract/EasyOCR)
         │                             │
         └──────────────┬──────────────┘
                        ↓
-            (Opcional) TrOCR Manuscrito
+            (Opcional) VLM fallback / TrOCR
                        ↓
                Markdown Export
 ```
@@ -267,8 +287,8 @@ Edite `config.py`:
 MODE_CONFIGS = {
     ProcessingMode.EXPRESS: {
         "backend": "tesseract",
-        "dpi": 150,  # Reduzir para mais velocidade
-        "detect_tables": False,
+        "dpi": 200,
+        "detect_tables": True,
         "skip_preprocessing": True
     },
     # ... outros modos
@@ -305,27 +325,26 @@ pip install kreuzberg
 
 **Verificações:**
 1. GPU NVIDIA presente: `nvidia-smi`
-2. CUDA instalado: `nvcc --version`
-3. PyTorch com CUDA: 
-   ```bash
-   pip uninstall torch torchvision
-   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-   ```
+2. PyTorch CUDA no **`.venv`**: `.venv/bin/python -c "import torch; print(torch.cuda.is_available())"`
+3. Wheel `+cu130` (não cu118/cu124 nesta máquina RTX 50): `./scripts/update_deps.sh --sync --cuda cu130`
+
+`nvcc` **não** é exigido pelo OCR. Só o servidor Nemotron Parse precisa do CUDA Toolkit 13.0.
 
 ### Problema: Flet não abre interface
 
 **Solução:**
 1. Verificar Python 3.9+: `python --version`
 2. Reinstalar Flet: `pip install --upgrade flet`
-3. Verificar logs em `logs/ocr_*.log`
+3. Verificar logs em `logs/` (`{CNJ}_ocr_{modo}_{modelo}_AAAAMMDD_HHMMSS.log` após PROCESSAR PDF)
 
 ---
 
 ## 📚 Documentação Adicional
 
+- **[GPU_SETUP.md](GPU_SETUP.md)** - RTX 50 / cu130, Ollama, Nemotron Parse
+- **[docs/DEPENDENCY_CONFLICTS.md](docs/DEPENDENCY_CONFLICTS.md)** - o que não misturar nos venvs
 - **[Kreuzberg Docs](https://docs.kreuzberg.dev/)** - Documentação oficial
 - **[Flet Docs](https://flet.dev/)** - Framework UI
-- **[Tesseract Docs](https://github.com/tesseract-ocr/tesseract)** - OCR engine
 
 ---
 

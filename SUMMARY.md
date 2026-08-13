@@ -1,3 +1,5 @@
+> **Nota.** Este arquivo descreve o PoC inicial. A estrutura e o fluxo atuais estão em [`README.md`](README.md), [`PROJECT_STRUCTURE.md`](PROJECT_STRUCTURE.md) e [`GPU_SETUP.md`](GPU_SETUP.md).
+
 # 🎉 PROOF OF CONCEPT COMPLETO
 
 ## Sistema Inteligente de OCR para PDFs Judiciais

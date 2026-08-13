@@ -35,8 +35,15 @@ class Config:
     # Prefer physical PDF page boundaries over judicial "Fls.:" markers when
     # Kreuzberg does not return usable per-page content.
     USE_PHYSICAL_PAGE_EXTRACTION = True
-    # Pages with less native text than this threshold may need OCR.
+    # Legacy threshold (pre-classifier). Prefer RESIDUAL_* below.
     MIN_NATIVE_PAGE_CHARS = 80
+    # After stripping PJe stamps: residual text needed to treat page as native.
+    RESIDUAL_NATIVE_CHARS = 200
+    # Residual text + embedded figures → hybrid (petition with attachments).
+    RESIDUAL_HYBRID_CHARS = 120
+    # Image coverage vs A4 area to treat as full-page scan.
+    FULL_PAGE_IMAGE_COVERAGE = 0.40
+    MEDIUM_FIGURE_COVERAGE = 0.08
 
     # Backend-specific language code mapping
     # Example: PaddleOCR and EasyOCR use "pt" instead of Tesseract's "por" for Portuguese.
@@ -56,12 +63,17 @@ class Config:
     TROCR_MAX_LENGTH = 256
     
     # ===== OCR MODE CONFIGURATIONS =====
+    # Default DPI for identity / standardized labor forms (TRCT, CD/SD, etc.)
+    DPI_FORM_DEFAULT = 300
+
     MODE_CONFIGS = {
         ProcessingMode.GPU: {
-            "backend": "easyocr",  # GPU-accelerated
+            "backend": "easyocr",  # GPU-accelerated first pass
             "use_gpu": True,
             "batch_size": 4,
-            "dpi": 200,
+            "dpi": 300,
+            "dpi_form": 300,
+            "dpi_screenshot": 220,
             "detect_tables": True,
             "language": "por",
             "enable_trocr": True,  # Enable handwriting detection
@@ -71,6 +83,8 @@ class Config:
             "backend": "tesseract",  # Fast CPU
             "use_gpu": False,
             "dpi": 300,
+            "dpi_form": 300,
+            "dpi_screenshot": 220,
             "detect_tables": True,
             "language": "por",
             "enable_trocr": False,  # Too slow on CPU
@@ -79,8 +93,10 @@ class Config:
         ProcessingMode.EXPRESS: {
             "backend": "tesseract",
             "use_gpu": False,
-            "dpi": 150,  # Lower DPI for speed
-            "detect_tables": False,
+            "dpi": 200,
+            "dpi_form": 250,
+            "dpi_screenshot": 200,
+            "detect_tables": True,
             "language": "por",
             "enable_trocr": False,
             "skip_preprocessing": True,
@@ -90,12 +106,109 @@ class Config:
     
     # ===== GPU SETTINGS =====
     MIN_VRAM_GB = 2  # Minimum VRAM for GPU mode. Original value was 4. Lower values can cause OOM or slower/unstable runs.
+
+    # ===== STRUCTURED FORM EXTRACTION (LlamaParse-style) =====
+    # Deterministic Tesseract-TSV + geometry templates for TRCT / ficha / recibo / FGTS.
+    ENABLE_TEMPLATE_EXTRACTION = True
+    TEMPLATE_MIN_FILL_RATIO = 0.45
+    # VLM fallback when a template cannot fill enough fields (local by default).
+    ENABLE_VLM_FALLBACK = True
+    # OpenAI-compatible endpoint. Ollama: http://127.0.0.1:11434/v1
+    # vLLM Nemotron Parse: http://127.0.0.1:8000/v1
+    # NVIDIA NIM (sends documents off-machine): https://integrate.api.nvidia.com/v1
+    VLM_BASE_URL = os.environ.get("VLM_BASE_URL", "http://127.0.0.1:11434/v1")
+    VLM_MODEL = os.environ.get("VLM_MODEL", "qwen2.5vl:7b")
+    VLM_API_KEY = os.environ.get("VLM_API_KEY", os.environ.get("NVIDIA_API_KEY", ""))
+    VLM_TIMEOUT_S = float(os.environ.get("VLM_TIMEOUT_S", "90"))
+    VLM_PRESETS = {
+        "off": {
+            "label": "Desligado (só templates)",
+            "enabled": False,
+            "base_url": "",
+            "model": "",
+        },
+        "qwen": {
+            "label": "Qwen2.5-VL (Ollama)",
+            "enabled": True,
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen2.5vl:7b",
+        },
+        "nemotron": {
+            "label": "Nemotron Parse (vLLM)",
+            "enabled": True,
+            "base_url": "http://127.0.0.1:8000/v1",
+            "model": "nvidia/NVIDIA-Nemotron-Parse-2.0",
+        },
+    }
+    # UI / CLI key: off | qwen | nemotron
+    VLM_BACKEND = os.environ.get("VLM_BACKEND", "").strip().lower()
+
+    @classmethod
+    def resolve_vlm_backend(cls, backend: str | None = None) -> str:
+        key = (backend or cls.VLM_BACKEND or "").strip().lower()
+        if key in cls.VLM_PRESETS:
+            return key
+        if not cls.ENABLE_VLM_FALLBACK:
+            return "off"
+        model = (cls.VLM_MODEL or "").lower()
+        url = (cls.VLM_BASE_URL or "").lower()
+        if "nemotron" in model or ":8000" in url:
+            return "nemotron"
+        return "qwen"
+
+    @classmethod
+    def vlm_preset(cls, backend: str | None = None) -> dict:
+        key = cls.resolve_vlm_backend(backend)
+        preset = dict(cls.VLM_PRESETS[key])
+        preset["key"] = key
+        if key != "off":
+            if cls.VLM_BASE_URL and (
+                (key == "qwen" and "11434" in cls.VLM_BASE_URL)
+                or (key == "nemotron" and "8000" in cls.VLM_BASE_URL)
+                or (key == "nemotron" and "nvidia.com" in cls.VLM_BASE_URL)
+            ):
+                preset["base_url"] = cls.VLM_BASE_URL
+            if cls.VLM_MODEL and (
+                (key == "qwen" and "qwen" in cls.VLM_MODEL.lower())
+                or (key == "nemotron" and "nemotron" in cls.VLM_MODEL.lower())
+            ):
+                preset["model"] = cls.VLM_MODEL
+        return preset
+
+    @classmethod
+    def vlm_model_tag(cls, backend: str | None = None, *, enabled: bool | None = None) -> str:
+        """Filename token for the VLM in use: nemotron | qwen | nenhum."""
+        if enabled is False:
+            return "nenhum"
+        key = cls.resolve_vlm_backend(backend)
+        if key == "nemotron":
+            return "nemotron"
+        if key == "qwen":
+            return "qwen"
+        return "nenhum"
+
+    @classmethod
+    def run_file_suffix(
+        cls,
+        mode,
+        vlm_backend: str | None = None,
+        *,
+        enable_vlm: bool | None = None,
+    ) -> str:
+        """e.g. gpu_nemotron, cpu_qwen, express_nenhum"""
+        if isinstance(mode, ProcessingMode):
+            mode_key = mode.value
+        else:
+            mode_key = str(mode or "cpu").strip().lower() or "cpu"
+        return f"{mode_key}_{cls.vlm_model_tag(vlm_backend, enabled=enable_vlm)}"
     
     # ===== MARKDOWN SETTINGS =====
     INCLUDE_METADATA = True
-    INCLUDE_PROCESSING_INFO = True
+    INCLUDE_PROCESSING_INFO = False  # Per-page Tipo/Device/Imagens removed from MD body
     INCLUDE_STATISTICS = True
     INCLUDE_TIMESTAMPS = True
+    # Do not embed raster/figure links in the Markdown body (text-only pages)
+    EMBED_IMAGES_IN_MD = False
     MD_ENCODING = 'utf-8'
     
     # ===== LOGGING =====
@@ -106,7 +219,7 @@ class Config:
     
     # ===== UI SETTINGS =====
     WINDOW_WIDTH = 1100
-    WINDOW_HEIGHT = 830
+    WINDOW_HEIGHT = 920
     WINDOW_TITLE = "OCR Inteligente para PDFs Judiciais (Powered by Kreuzberg)"
     THEME_MODE = "light"
     

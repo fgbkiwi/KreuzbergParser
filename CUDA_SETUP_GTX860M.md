@@ -1,3 +1,10 @@
+> **Nota histórica.** Este guia descreve um setup antigo (GTX 860M / cu124).
+> Para o ambiente atual (RTX 50-series / cu130) e regras de dependências, use:
+> - [`GPU_SETUP.md`](GPU_SETUP.md)
+> - [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md)
+
+---
+
 # CUDA Setup Guide for NVIDIA GeForce GTX 860M
 
 This guide documents the successful setup process for enabling CUDA GPU acceleration on a **NVIDIA GeForce GTX 860M** (Maxwell architecture, 2GB VRAM) with PyTorch on Windows 11.

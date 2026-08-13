@@ -9,37 +9,43 @@
 ## 📂 Árvore de Arquivos
 
 ```
-intelligent_ocr_system/
+KreuzbergParser/
 │
-├── 📄 main.py                      # Entry point da aplicação
-├── ⚙️ config.py                    # Configurações (95 linhas - 64% menor)
-├── 📦 requirements.txt             # Dependências (9 pacotes vs 15 original)
-├── 🧪 test_setup.py               # Script de teste de instalação
+├── main.py
+├── config.py                    # Modos, templates, presets VLM
+├── requirements.txt
 │
-├── 📚 README.md                    # Documentação completa
-├── 🚀 QUICKSTART.md               # Guia de início rápido
-├── 📊 COMPARISON.md               # Comparação Original vs Kreuzberg
+├── README.md
+├── QUICKSTART.md
+├── GPU_SETUP.md                 # RTX 50 / cu130 / Nemotron / Ollama
+├── CUDA_SETUP_GTX860M.md        # Histórico Maxwell
+├── docs/DEPENDENCY_CONFLICTS.md
 │
-├── 🎯 core/                        # Módulos principais (450 linhas vs 1,500)
-│   ├── __init__.py
-│   ├── kreuzberg_engine.py        # Wrapper Kreuzberg (220 linhas)
-│   ├── handwriting_detector.py    # TrOCR opcional (180 linhas)
-│   └── markdown_converter.py      # Exportação MD (180 linhas)
+├── core/
+│   ├── kreuzberg_engine.py      # OCR + classificação + templates/VLM
+│   ├── page_classifier.py       # nativa / híbrida / image_page
+│   ├── pje_sumario.py           # SUMÁRIO PJe
+│   ├── form_layout.py           # TSV Tesseract + grade OpenCV
+│   ├── form_templates.py        # TRCT, ficha, recibo, FGTS
+│   ├── labor_forms.py           # Formatadores por tipo de doc
+│   ├── vlm_ocr.py               # Cliente OpenAI-compatível
+│   ├── handwriting_detector.py  # TrOCR opcional
+│   └── markdown_converter.py
 │
-├── 🖥️ ui/                          # Interface Flet (350 linhas)
-│   ├── __init__.py
-│   └── app.py                     # Aplicação gráfica
+├── ui/app.py                    # Flet: modos, dropdown VLM
+├── utils/logger.py              # Log de sessão + auditoria por processo
 │
-├── 🛠️ utils/                       # Utilitários (133 linhas)
-│   ├── __init__.py
-│   ├── gpu_detector.py            # Detecção GPU (75 linhas)
-│   └── logger.py                  # Sistema de logging (58 linhas)
+├── scripts/
+│   ├── update_deps.sh
+│   ├── check_updates.py
+│   ├── compare_extraction.py
+│   ├── setup_nemotron_venv.sh
+│   ├── start_nemotron_parse.sh
+│   └── install_cuda_toolkit.sh
 │
-├── 📁 logs/                        # Logs de execução (criado automaticamente)
-├── 📁 temp/                        # Arquivos temporários (criado automaticamente)
-├── 📁 output/                      # Resultados default (criado automaticamente)
-│
-└── 🙈 .gitignore                   # Git ignore rules
+├── logs/                        # {CNJ}_ocr_{modo}_{modelo}_*.log
+├── tessdata/                    # por/eng (1ª execução)
+└── output/
 ```
 
 ---
@@ -224,31 +230,24 @@ python-dotenv==1.0.0      # Configuração .env
 
 ## 🎯 Modos de Operação
 
-### ⚡ Express Mode
+### ⚡ Express (Rápido)
 - **Backend**: Tesseract
-- **DPI**: 150
-- **Preprocessing**: Mínimo
-- **Tables**: Não
-- **Velocidade**: ⭐⭐⭐⭐⭐
-- **Acurácia**: ⭐⭐⭐
+- **DPI**: 200
+- **Tables**: Sim (Kreuzberg)
+- **VLM**: opcional (dropdown)
 
-### 💻 CPU Mode
+### 💻 CPU
 - **Backend**: Tesseract
 - **DPI**: 300
-- **Preprocessing**: Completo
 - **Tables**: Sim
-- **Velocidade**: ⭐⭐⭐
-- **Acurácia**: ⭐⭐⭐⭐
+- **VLM**: opcional
 
-### 🚀 GPU Mode
-- **Backend**: EasyOCR
-- **DPI**: 300
-- **Preprocessing**: Completo
-- **Tables**: Sim
-- **Handwriting**: TrOCR
-- **Velocidade**: ⭐⭐⭐⭐⭐
-- **Acurácia**: ⭐⭐⭐⭐⭐
-- **Requisitos**: NVIDIA GPU 4GB+
+### 🚀 GPU
+- **Backend**: EasyOCR CUDA
+- **DPI**: 300 (formulários)
+- **Handwriting**: TrOCR opcional
+- **VLM**: Qwen (Ollama) ou Nemotron Parse (vLLM em `.venv-nemotron`)
+- **Requisitos**: NVIDIA + PyTorch cu130 (RTX 50)
 
 ---
 

@@ -4,6 +4,7 @@ Entry point - Powered by Kreuzberg
 
 90% code reduction compared to original implementation
 """
+import logging
 import sys
 from pathlib import Path
 
@@ -21,9 +22,10 @@ def main():
     # Configuration
     config = Config()
     config.ensure_directories()
-    
-    # Setup logging
-    logger = setup_logger(__name__, config)
+
+    # Root logger so core.* / utils.* reach file + console
+    setup_logger(config=config)
+    logger = logging.getLogger(__name__)
     logger.info("=" * 70)
     logger.info("Sistema Inteligente de OCR para PDFs Judiciais")
     logger.info("Powered by Kreuzberg - https://kreuzberg.dev/")
@@ -42,20 +44,27 @@ def main():
             "Não foi possível preparar os dados de idioma do Tesseract. "
             "O OCR em páginas escaneadas pode falhar."
         )
-    
+
     # Log GPU status
     from utils.gpu_detector import gpu_detector
     gpu_detector.log_gpu_status()
-    
+
+    # Advisory dependency check (at most every 7 days; never blocks startup)
+    try:
+        from scripts.check_updates import maybe_check_dependency_updates
+        maybe_check_dependency_updates(logger_=logger, background=True)
+    except Exception:
+        logger.debug("Checagem periódica de dependências ignorada", exc_info=True)
+
     logger.info("")
     logger.info("🎯 Iniciando interface gráfica...")
-    
+
     # Launch Flet UI
     try:
         run_app()
     except KeyboardInterrupt:
         logger.info("Aplicação interrompida pelo usuário")
-    except Exception as e:
+    except Exception:
         logger.exception("Erro fatal na aplicação")
         raise
 
