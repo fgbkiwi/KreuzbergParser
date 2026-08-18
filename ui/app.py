@@ -8,7 +8,7 @@ import logging
 import time
 import threading
 
-from config import Config, ProcessingMode
+from config import Config, ProcessingMode, is_gpu_mode
 from utils.gpu_detector import gpu_detector
 from core.kreuzberg_engine import KreuzbergOCREngine
 from core.markdown_converter import MarkdownConverter
@@ -74,45 +74,56 @@ class OCRApp:
             hint_text="Clique no botão para selecionar...",
         )
 
-        handwriting_disabled = self.selected_mode != ProcessingMode.GPU
+        handwriting_disabled = not is_gpu_mode(self.selected_mode)
+
+        def _mode_radio(value: ProcessingMode, label: str) -> ft.Container:
+            return ft.Container(
+                height=32,
+                alignment=ft.Alignment.CENTER_LEFT,
+                content=ft.Radio(value=value.value, label=label),
+            )
 
         self.mode_radio = ft.RadioGroup(
-            content=ft.Column(
+            content=ft.Row(
                 [
-                    ft.Container(
-                        height=32,
-                        alignment=ft.Alignment.CENTER_LEFT,
-                        content=ft.Radio(
-                            value=ProcessingMode.EXPRESS,
-                            label="⚡ Express (Rápido) - Tesseract 200 DPI",
-                        ),
+                    ft.Column(
+                        [
+                            _mode_radio(
+                                ProcessingMode.EXPRESS,
+                                "⚡ Express - Tesseract 200 DPI",
+                            ),
+                            _mode_radio(
+                                ProcessingMode.CPU,
+                                "💻 CPU - Tesseract 300 DPI",
+                            ),
+                            _mode_radio(
+                                ProcessingMode.GPU,
+                                "🚀 GPU - EasyOCR CUDA",
+                            ),
+                        ],
+                        spacing=6,
+                        tight=True,
                     ),
-                    ft.Container(
-                        height=32,
-                        alignment=ft.Alignment.CENTER_LEFT,
-                        content=ft.Radio(
-                            value=ProcessingMode.CPU,
-                            label="💻 CPU - Tesseract 300 DPI + tabelas",
-                        ),
-                    ),
-                    ft.Container(
-                        height=32,
-                        alignment=ft.Alignment.CENTER_LEFT,
-                        content=ft.Radio(
-                            value=ProcessingMode.GPU,
-                            label="🚀 GPU - EasyOCR CUDA (recomendado se NVIDIA)",
-                        ),
+                    ft.Column(
+                        [
+                            _mode_radio(
+                                ProcessingMode.PADDLE_CPU,
+                                "📄 PaddleOCR CPU - 300 DPI",
+                            ),
+                            _mode_radio(
+                                ProcessingMode.PADDLE_GPU,
+                                "🚀 PaddleOCR GPU - 300 DPI",
+                            ),
+                        ],
+                        spacing=6,
+                        tight=True,
                     ),
                 ],
-                spacing=6,
+                spacing=16,
+                vertical_alignment=ft.CrossAxisAlignment.START,
             ),
-            value=self.selected_mode,
+            value=self.selected_mode.value,
             on_change=self.on_mode_changed,
-        )
-
-        self.generate_markdown_check = ft.Checkbox(
-            label="Gerar arquivo Markdown",
-            value=True,
         )
 
         self.enable_handwriting_check = ft.Checkbox(
@@ -249,6 +260,7 @@ class OCRApp:
                             [
                                 ft.Container(
                                     expand=55,
+                                    height=self.config.MODE_OPTIONS_PANEL_HEIGHT,
                                     padding=10,
                                     border=ft.Border.all(1, ft.Colors.GREY_400),
                                     border_radius=5,
@@ -263,10 +275,12 @@ class OCRApp:
                                             self.mode_radio,
                                         ],
                                         spacing=8,
+                                        tight=True,
                                     ),
                                 ),
                                 ft.Container(
                                     expand=45,
+                                    height=self.config.MODE_OPTIONS_PANEL_HEIGHT,
                                     padding=10,
                                     border=ft.Border.all(1, ft.Colors.GREY_400),
                                     border_radius=5,
@@ -277,11 +291,6 @@ class OCRApp:
                                                 "🔧 Opções",
                                                 size=16,
                                                 weight=ft.FontWeight.BOLD,
-                                            ),
-                                            ft.Container(
-                                                height=32,
-                                                alignment=ft.Alignment.CENTER_LEFT,
-                                                content=self.generate_markdown_check,
                                             ),
                                             ft.Container(
                                                 height=32,
@@ -309,10 +318,12 @@ class OCRApp:
                                             ),
                                         ],
                                         spacing=8,
+                                        tight=True,
                                     ),
                                 ),
                             ],
                             spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
                         ),
                         ft.Row(
                             [
@@ -451,16 +462,26 @@ class OCRApp:
         )
 
     def on_mode_changed(self, e):
-        self.selected_mode = e.control.value
-
-        if self.selected_mode == ProcessingMode.GPU and not self.gpu_info["available"]:
-            self.log_message(
-                "⚠️ GPU não disponível. Usando modo CPU.", ft.Colors.ORANGE
-            )
+        raw = getattr(e.control, "value", None) or e.control.value
+        try:
+            self.selected_mode = ProcessingMode(raw)
+        except ValueError:
             self.selected_mode = ProcessingMode.CPU
-            self.mode_radio.value = ProcessingMode.CPU
 
-        if self.selected_mode != ProcessingMode.GPU:
+        if is_gpu_mode(self.selected_mode) and not self.gpu_info["available"]:
+            fallback = (
+                ProcessingMode.PADDLE_CPU
+                if self.selected_mode == ProcessingMode.PADDLE_GPU
+                else ProcessingMode.CPU
+            )
+            self.log_message(
+                f"⚠️ GPU não disponível. Usando modo {fallback.value}.",
+                ft.Colors.ORANGE,
+            )
+            self.selected_mode = fallback
+            self.mode_radio.value = fallback.value
+
+        if not is_gpu_mode(self.selected_mode):
             self.enable_handwriting_check.value = False
             self.enable_handwriting_check.disabled = True
         else:
@@ -587,14 +608,13 @@ class OCRApp:
                 vlm_backend=vlm_backend,
             )
 
-            if self.generate_markdown_check.value:
-                self.log_message("📝 Gerando arquivo Markdown...")
-                converter = MarkdownConverter(self.config)
-                run_suffix = self._get_run_suffix()
-                output_filename = f"{Path(pdf_path).stem}_ocr_{run_suffix}.md"
-                output_path = Path(output_folder) / output_filename
-                md_path = converter.convert_to_markdown(result, str(output_path))
-                self.log_message(f"✅ Markdown salvo: {md_path}", ft.Colors.GREEN)
+            self.log_message("📝 Gerando arquivo Markdown...")
+            converter = MarkdownConverter(self.config)
+            run_suffix = self._get_run_suffix()
+            output_filename = f"{Path(pdf_path).stem}_ocr_{run_suffix}.md"
+            output_path = Path(output_folder) / output_filename
+            md_path = converter.convert_to_markdown(result, str(output_path))
+            self.log_message(f"✅ Markdown salvo: {md_path}", ft.Colors.GREEN)
 
             audit_log = result.get("metadata", {}).get("log_path")
             if audit_log:

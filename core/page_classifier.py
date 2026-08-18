@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+
+from utils.poppler import poppler_tool, subprocess_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,12 @@ GOVBR_MIN_STRIPS = 3
 # Full-page scan: large width AND height (real raster), not letterhead strips
 A4_SCAN_MIN_WIDTH = 1500
 A4_SCAN_MIN_HEIGHT = 2000
-# Letterhead / office banner: wide but short
-LETTERHEAD_MIN_WIDTH = 1200
+# Letterhead / office banner: wide but short (intrinsic pixels)
+LETTERHEAD_MIN_WIDTH = 600
 LETTERHEAD_MAX_HEIGHT = 400
+LETTERHEAD_TOP_RATIO = 0.18
+FOOTER_BOTTOM_RATIO = 0.15
+BANNER_MAX_HEIGHT_RATIO = 0.22
 # Tiny PJe icon / QR-ish logos
 LOGO_MAX_SIDE = 120
 LOGO_MAX_AREA = 25_000
@@ -55,6 +59,12 @@ class PageImageInfo:
     height: int
     encoding: str
     object_id: str = ""
+    x: Optional[float] = None
+    y: Optional[float] = None
+    display_width: Optional[float] = None
+    display_height: Optional[float] = None
+    page_width: Optional[float] = None
+    page_height: Optional[float] = None
 
     @property
     def area(self) -> int:
@@ -81,17 +91,71 @@ class PageImageInfo:
         return False
 
     def is_letterhead_strip(self) -> bool:
+        # Conservative intrinsic check (pdfimages pixels, no page position).
         return (
-            self.width >= LETTERHEAD_MIN_WIDTH
+            self.width >= 1200
             and self.height <= LETTERHEAD_MAX_HEIGHT
             and self.width > self.height * 2.5
         )
+
+    def _height_ratio(self) -> float:
+        h = self.display_height if self.display_height else float(self.height)
+        page_h = self.page_height or A4_HEIGHT_PX
+        if page_h <= 0:
+            return 0.0
+        return h / page_h
+
+    def _width_ratio(self) -> float:
+        w = self.display_width if self.display_width else float(self.width)
+        page_w = self.page_width or A4_WIDTH_PX
+        if page_w <= 0:
+            return 0.0
+        return w / page_w
+
+    def is_govbr_strip(self) -> bool:
+        return (
+            self.width >= GOVBR_STRIP_MIN_WIDTH
+            and self.height <= GOVBR_STRIP_MAX_HEIGHT
+            and self.width > self.height * 2
+        )
+
+    def is_header_banner(self) -> bool:
+        if self.is_govbr_strip():
+            return False
+        if self.y is not None and self.page_height:
+            top = self.y / self.page_height
+            wide = self._width_ratio() >= 0.45 or (
+                (self.display_width or self.width)
+                > (self.display_height or self.height or 1) * 2.0
+            )
+            return (
+                top <= LETTERHEAD_TOP_RATIO
+                and self._height_ratio() <= BANNER_MAX_HEIGHT_RATIO
+                and wide
+            )
+        return self.is_letterhead_strip()
+
+    def is_footer_banner(self) -> bool:
+        if self.is_govbr_strip():
+            return False
+        if self.y is None or not self.page_height:
+            return False
+        h = self.display_height if self.display_height else float(self.height)
+        bottom = (self.y + h) / self.page_height
+        return bottom >= (1.0 - FOOTER_BOTTOM_RATIO) and self._height_ratio() <= 0.18
+
+    def is_banner_or_footer_image(self) -> bool:
+        return self.is_header_banner() or self.is_footer_banner()
 
     def is_full_page_scan(self) -> bool:
         return self.width >= A4_SCAN_MIN_WIDTH and self.height >= A4_SCAN_MIN_HEIGHT
 
     def is_content_figure(self) -> bool:
-        if self.is_logo_or_icon() or self.is_letterhead_strip():
+        if self.is_logo_or_icon():
+            return False
+        if self.is_govbr_strip():
+            return True
+        if self.is_banner_or_footer_image():
             return False
         if self.is_full_page_scan():
             return True
@@ -207,13 +271,15 @@ def extract_cnj_process_number(
 
 
 def _pdf_info_field(pdf_path: Path, field: str) -> Optional[str]:
-    if shutil.which("pdfinfo") is None:
+    pdfinfo = poppler_tool("pdfinfo")
+    if pdfinfo is None:
         return None
     try:
         output = subprocess.check_output(
-            ["pdfinfo", str(pdf_path)],
+            [pdfinfo, str(pdf_path)],
             stderr=subprocess.DEVNULL,
             text=True,
+            **subprocess_kwargs(),
         )
     except (subprocess.CalledProcessError, OSError):
         return None
@@ -334,21 +400,23 @@ def residual_is_overlay_only(residual_text: str, min_chars: int = 200) -> bool:
 # ---------------------------------------------------------------------------
 
 def pdfimages_available() -> bool:
-    return shutil.which("pdfimages") is not None
+    return poppler_tool("pdfimages") is not None
 
 
 def list_pdf_images(pdf_path: str | Path) -> List[PageImageInfo]:
     """Parse `pdfimages -list` into PageImageInfo rows (skips soft masks)."""
     pdf_path = Path(pdf_path)
-    if not pdfimages_available():
+    pdfimages = poppler_tool("pdfimages")
+    if pdfimages is None:
         logger.warning("pdfimages not available; image coverage will be zero")
         return []
 
     try:
         output = subprocess.check_output(
-            ["pdfimages", "-list", str(pdf_path)],
+            [pdfimages, "-list", str(pdf_path)],
             stderr=subprocess.DEVNULL,
             text=True,
+            **subprocess_kwargs(),
         )
     except (subprocess.CalledProcessError, OSError) as exc:
         logger.warning("pdfimages -list failed for %s: %s", pdf_path.name, exc)
@@ -390,6 +458,16 @@ def list_pdf_images(pdf_path: str | Path) -> List[PageImageInfo]:
     return images
 
 
+def _image_index_from_name(path: Path) -> Optional[int]:
+    match = re.search(r"-(\d+)$", path.stem)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 def extract_page_images_to_dir(
     pdf_path: str | Path,
     page_num: int,
@@ -397,24 +475,26 @@ def extract_page_images_to_dir(
     prefix: str = "page",
     *,
     skip_logos: bool = True,
+    page_images: Optional[Sequence[PageImageInfo]] = None,
 ) -> List[Path]:
     """
     Extract embedded images for one physical page into output_dir.
 
-    When skip_logos=True, drops tiny decorative icons.
+    When skip_logos=True, drops tiny decorative icons and banner/footer images.
     """
     pdf_path = Path(pdf_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not pdfimages_available():
+    pdfimages = poppler_tool("pdfimages")
+    if pdfimages is None:
         return []
 
     root = output_dir / f"{prefix}_{page_num:04d}"
     try:
         subprocess.check_call(
             [
-                "pdfimages",
+                pdfimages,
                 "-f",
                 str(page_num),
                 "-l",
@@ -425,6 +505,7 @@ def extract_page_images_to_dir(
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            **subprocess_kwargs(),
         )
     except (subprocess.CalledProcessError, OSError) as exc:
         logger.warning(
@@ -432,13 +513,29 @@ def extract_page_images_to_dir(
         )
         return []
 
-    saved = sorted(output_dir.glob(f"{prefix}_{page_num:04d}*"))
+    saved = sorted(
+        p for p in output_dir.glob(f"{prefix}_{page_num:04d}*") if p.is_file()
+    )
     if not skip_logos:
-        return [p for p in saved if p.is_file()]
+        return saved
 
-    # Drop tiny decorative icons (< 2KB) and very small dimensions via filesize
-    meaningful = [p for p in saved if p.is_file() and p.stat().st_size >= 2048]
-    return meaningful if meaningful else [p for p in saved if p.is_file()]
+    by_num = {img.num: img for img in (page_images or [])}
+    meaningful: List[Path] = []
+    for path in saved:
+        if path.stat().st_size < 2048:
+            continue
+        idx = _image_index_from_name(path)
+        info = by_num.get(idx) if idx is not None else None
+        if info is None and idx is not None:
+            info = by_num.get(idx + 1)
+        if info is not None and (
+            info.is_logo_or_icon() or info.is_banner_or_footer_image()
+        ):
+            continue
+        if info is not None and not info.is_content_figure():
+            continue
+        meaningful.append(path)
+    return meaningful if meaningful else [p for p in saved if p.stat().st_size >= 2048]
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +668,13 @@ def classify_pdf_pages(
 
     pdf_path = Path(pdf_path)
     all_images = list_pdf_images(pdf_path)
+    try:
+        from core.page_layout import attach_image_positions, load_pdf_layouts
+
+        attach_image_positions(all_images, load_pdf_layouts(pdf_path))
+    except Exception as exc:
+        logger.debug("Page layout attach skipped: %s", exc)
+
     by_page: Dict[int, List[PageImageInfo]] = {}
     for img in all_images:
         by_page.setdefault(img.page, []).append(img)

@@ -8,10 +8,12 @@ formats known labor forms.
 from __future__ import annotations
 
 import logging
+import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
     import kreuzberg
@@ -20,13 +22,20 @@ except ImportError:
     KREUZBERG_AVAILABLE = False
     logging.warning("Kreuzberg not installed. Install with: pip install kreuzberg")
 
-from config import Config, ProcessingMode
+from config import Config, ProcessingMode, is_gpu_mode
 from core.form_templates import TEMPLATE_KINDS, try_structured_extraction
 from core.labor_forms import format_labor_document, refine_kind
+from core.letterhead import apply_letterhead_strip
 from core.page_classifier import (
     classify_pdf_pages,
     extract_cnj_process_number,
     extract_page_images_to_dir,
+)
+from core.page_layout import (
+    LayoutRect,
+    is_duplicate_figure_text,
+    load_pdf_layouts,
+    native_text_covers_rect,
 )
 from core.pje_sumario import (
     detect_doc_kind_from_text,
@@ -36,6 +45,7 @@ from core.pje_sumario import (
 from utils.gpu_detector import gpu_detector
 from utils.logger import attach_process_log_file, log_page_end, log_page_start
 from utils.pdf_pages import extract_pages_text, get_page_count, poppler_available
+from utils.poppler import ensure_poppler
 from utils.tessdata import ensure_tessdata
 
 logger = logging.getLogger(__name__)
@@ -69,6 +79,7 @@ class KreuzbergOCREngine:
         self.mode_config = self.config.get_mode_config(mode)
         self._handwriting_detector = None
         self._sumario = {}
+        self._layouts = {}
         self.enable_template_extraction = bool(
             getattr(self.config, "ENABLE_TEMPLATE_EXTRACTION", True)
         )
@@ -81,14 +92,29 @@ class KreuzbergOCREngine:
         )
         self.vlm_model = preset.get("model") or getattr(self.config, "VLM_MODEL", "")
 
-        if mode == ProcessingMode.GPU:
+        if is_gpu_mode(mode):
             is_suitable, message = gpu_detector.is_gpu_suitable(self.config.MIN_VRAM_GB)
             if not is_suitable:
-                logger.warning(
-                    "GPU inadequate: %s. Falling back to CPU mode.", message
+                fallback = (
+                    ProcessingMode.PADDLE_CPU
+                    if mode == ProcessingMode.PADDLE_GPU
+                    else ProcessingMode.CPU
                 )
-                self.mode = ProcessingMode.CPU
-                self.mode_config = self.config.get_mode_config(ProcessingMode.CPU)
+                logger.warning(
+                    "GPU inadequate: %s. Falling back to %s mode.",
+                    message,
+                    fallback.value,
+                )
+                self.mode = fallback
+                self.mode_config = self.config.get_mode_config(fallback)
+            elif mode == ProcessingMode.PADDLE_GPU:
+                from core.paddle_gpu_ocr import get_paddle_gpu_engine
+                from utils.ort_runtime import prepare_paddle_gpu_runtime
+
+                prepare_paddle_gpu_runtime()
+                get_paddle_gpu_engine(
+                    rec_batch_num=int(self.mode_config.get("rec_batch_num") or 8)
+                )
 
         logger.info("Kreuzberg OCR Engine initialized in %s mode", self.mode)
         logger.info("Backend: %s", self.mode_config.get("backend", "tesseract"))
@@ -157,7 +183,7 @@ class KreuzbergOCREngine:
 
         use_handwriting = bool(
             enable_handwriting
-            and self.mode == ProcessingMode.GPU
+            and is_gpu_mode(self.mode)
             and self.mode_config.get("enable_trocr", False)
         )
         if use_handwriting:
@@ -173,9 +199,17 @@ class KreuzbergOCREngine:
         )
 
         try:
+            try:
+                ensure_poppler(self.config.POPPLER_DIR)
+            except Exception as exc:
+                logger.warning("Poppler setup failed: %s", exc)
+
             if not poppler_available():
                 raise RuntimeError(
-                    "Poppler (pdftotext/pdfinfo) is required for page classification"
+                    "Poppler (pdftotext/pdfinfo) é necessário para classificar páginas. "
+                    "No Windows o app baixa automaticamente para a pasta poppler/. "
+                    "No Linux: sudo apt install poppler-utils. "
+                    "No macOS: brew install poppler."
                 )
 
             page_texts = extract_pages_text(pdf_path)
@@ -195,27 +229,75 @@ class KreuzbergOCREngine:
                 full_page_coverage=self.config.FULL_PAGE_IMAGE_COVERAGE,
                 medium_figure_coverage=self.config.MEDIUM_FIGURE_COVERAGE,
             )
+            apply_letterhead_strip(
+                classifications,
+                min_repeat_pages=int(
+                    getattr(self.config, "LETTERHEAD_REPEAT_MIN_PAGES", 3)
+                ),
+            )
+            self._layouts = load_pdf_layouts(pdf_path)
 
             pages_data: List[Dict] = []
-            for classification in classifications:
-                page_data = self._process_classified_page(
-                    pdf_path=pdf_path,
-                    processo=processo,
-                    classification=classification,
-                    raw_text=page_texts[classification.page - 1]
-                    if classification.page - 1 < len(page_texts)
-                    else "",
-                    images_dir=images_dir,
-                    enable_handwriting=use_handwriting,
-                )
-                pages_data.append(page_data)
-                if progress_callback:
-                    try:
-                        progress_callback(
-                            classification.page, total_pages, page_data
+            total = len(classifications)
+            batch_size = self._adaptive_ocr_batch_size()
+            prefetch = ThreadPoolExecutor(max_workers=1)
+            try:
+                idx = 0
+                while idx < total:
+                    classification = classifications[idx]
+                    if classification.page_class == "image_page":
+                        run_end = idx + 1
+                        while (
+                            run_end < total
+                            and classifications[run_end].page_class == "image_page"
+                            and (run_end - idx) < batch_size
+                        ):
+                            run_end += 1
+                        run = classifications[idx:run_end]
+                        batch_pages = self._process_image_page_run(
+                            pdf_path=pdf_path,
+                            processo=processo,
+                            classifications=run,
+                            page_texts=page_texts,
+                            images_dir=images_dir,
+                            enable_handwriting=use_handwriting,
+                            prefetch=prefetch,
                         )
-                    except Exception as cb_exc:
-                        logger.debug("Progress callback error: %s", cb_exc)
+                        for offset, page_data in enumerate(batch_pages):
+                            pages_data.append(page_data)
+                            if progress_callback:
+                                try:
+                                    progress_callback(
+                                        run[offset].page, total, page_data
+                                    )
+                                except Exception as cb_exc:
+                                    logger.debug(
+                                        "Progress callback error: %s", cb_exc
+                                    )
+                        idx = run_end
+                        continue
+
+                    page_data = self._process_classified_page(
+                        pdf_path=pdf_path,
+                        processo=processo,
+                        classification=classification,
+                        raw_text=page_texts[classification.page - 1]
+                        if classification.page - 1 < len(page_texts)
+                        else "",
+                        images_dir=images_dir,
+                        enable_handwriting=use_handwriting,
+                    )
+                    pages_data.append(page_data)
+                    if progress_callback:
+                        try:
+                            progress_callback(
+                                classification.page, total, page_data
+                            )
+                        except Exception as cb_exc:
+                            logger.debug("Progress callback error: %s", cb_exc)
+                    idx += 1
+            finally:
+                prefetch.shutdown(wait=False)
 
             total_time = time.time() - start_time
             stats = self._calculate_statistics(pages_data, total_time)
@@ -258,6 +340,9 @@ class KreuzbergOCREngine:
         raw_text: str,
         images_dir: Path,
         enable_handwriting: bool,
+        png_bytes: Optional[bytes] = None,
+        raster_path: Optional[Path] = None,
+        ocr_tuple=None,
     ) -> Dict:
         page_num = classification.page
         page_class = classification.page_class
@@ -325,6 +410,9 @@ class KreuzbergOCREngine:
                         images_dir,
                         enable_handwriting=enable_handwriting,
                         raw_text=raw_text,
+                        png_bytes=png_bytes,
+                        raster_path=raster_path,
+                        ocr_tuple=ocr_tuple,
                     )
                 )
                 page_data["device"] = self._ocr_device()
@@ -394,8 +482,8 @@ class KreuzbergOCREngine:
         raw_text: str,
     ) -> Dict:
         body = (classification.residual_text or "").strip()
-        figure_texts: List[str] = []
         image_paths: List[str] = []
+        figure_entries: List[Tuple[float, float, str, str]] = []
 
         saved = extract_page_images_to_dir(
             pdf_path,
@@ -403,26 +491,24 @@ class KreuzbergOCREngine:
             images_dir,
             prefix="hybrid",
             skip_logos=True,
+            page_images=classification.images,
         )
-        # Prefer content figures by size; skip tiny leftovers
+        layout = (self._layouts or {}).get(classification.page)
+        info_by_num = {img.num: img for img in (classification.images or [])}
+
         for path in saved:
             if path.stat().st_size < 3000:
+                continue
+            info = self._image_info_for_path(path, info_by_num)
+            if info is not None and (
+                info.is_logo_or_icon() or info.is_banner_or_footer_image()
+            ):
                 continue
             image_paths.append(str(path))
             try:
                 ocr_text, has_tables, _lang, table_mds = self._ocr_image_file(
                     path, prefer_tables=True, dpi_hint=300
                 )
-                if ocr_text.strip():
-                    formatted = format_labor_document(
-                        ocr_text,
-                        detect_doc_kind_from_text(ocr_text),
-                        tables_markdown=table_mds or None,
-                    )
-                    figure_texts.append(formatted)
-                    if has_tables:
-                        # flag bubbled via return
-                        pass
             except Exception as exc:
                 logger.warning(
                     "Hybrid figure OCR failed page %s (%s): %s",
@@ -430,22 +516,44 @@ class KreuzbergOCREngine:
                     path.name,
                     exc,
                 )
+                continue
+            if not (ocr_text or "").strip():
+                continue
+            if is_duplicate_figure_text(ocr_text, body):
+                continue
+            fig_rect = None
+            if info is not None and info.y is not None:
+                fig_rect = LayoutRect(
+                    x=float(info.x or 0),
+                    y=float(info.y),
+                    width=float(info.display_width or info.width or 0),
+                    height=float(info.display_height or info.height or 0),
+                )
+            if fig_rect is not None and native_text_covers_rect(layout, fig_rect):
+                continue
+            formatted = format_labor_document(
+                ocr_text,
+                detect_doc_kind_from_text(ocr_text),
+                tables_markdown=table_mds or None,
+            )
+            y = float(info.y) if info is not None and info.y is not None else 10_000.0
+            x = float(info.x) if info is not None and info.x is not None else 0.0
+            figure_entries.append((y, x, formatted, str(path)))
 
-        parts = []
-        if body:
-            parts.append(body)
-        for idx, fig in enumerate(figure_texts, start=1):
-            parts.append(f"### Quadro / figura {idx}\n\n{fig}")
-        text = "\n\n".join(parts).strip()
+        if figure_entries and any(y < 9_000 for y, _x, _f, _p in figure_entries):
+            text = self._merge_body_with_figures(body, layout, figure_entries)
+        else:
+            text = self._append_unique_figures(body, figure_entries)
 
+        use_gpu = is_gpu_mode(self.mode)
         return {
-            "text": text,
+            "text": (text or body).strip(),
             "residual_text": classification.residual_text,
             "type": "hybrid",
-            "device": "CPU",
-            "library": "poppler.pdftotext+ocr_figures",
+            "device": "GPU" if use_gpu else "CPU",
+            "library": f"poppler.pdftotext+{self._ocr_library()}",
             "images": image_paths if self.config.EMBED_IMAGES_IN_MD else [],
-            "has_tables": any("|" in (f or "") for f in figure_texts),
+            "has_tables": any("|" in (fig or "") for _y, _x, fig, _p in figure_entries),
             "doc_kind": classification.doc_kind,
             "signature_lines": self._signature_lines_from_raw(raw_text),
         }
@@ -458,20 +566,20 @@ class KreuzbergOCREngine:
         *,
         enable_handwriting: bool,
         raw_text: str,
+        png_bytes: Optional[bytes] = None,
+        raster_path: Optional[Path] = None,
+        ocr_tuple=None,
     ) -> Dict:
         kind = classification.doc_kind
         dpi = self._dpi_for_kind(kind, classification.subtype)
 
-        page_index = classification.page - 1
-        try:
-            png_bytes = kreuzberg.render_pdf_page(
-                str(pdf_path), page_index, dpi=dpi
+        if png_bytes is None or raster_path is None:
+            png_bytes, raster_path = self._render_classified_raster(
+                pdf_path, classification, images_dir, dpi=dpi
             )
-        except Exception as exc:
-            raise RuntimeError(f"render_pdf_page failed: {exc}") from exc
-
-        raster_path = images_dir / f"raster_page_{classification.page:04d}.png"
-        raster_path.write_bytes(png_bytes)
+        else:
+            png_bytes = png_bytes
+            raster_path = Path(raster_path)
 
         ocr_text = ""
         has_tables = False
@@ -482,41 +590,33 @@ class KreuzbergOCREngine:
 
         prefer_tables = bool(kind in FORM_KINDS or classification.force_image_ocr)
 
-        try:
-            ocr_text, has_tables, language, table_mds = self._ocr_png_bytes(
-                png_bytes,
-                prefer_tables=prefer_tables,
-                form_kind=kind,
-            )
-        except Exception as exc:
-            error_text = str(exc)
-            if self.mode == ProcessingMode.GPU and "easyocr" in error_text.lower():
-                logger.warning(
-                    "GPU OCR failed on page %s (%s). Falling back to CPU.",
-                    classification.page,
-                    error_text,
+        if ocr_tuple is not None:
+            ocr_text, has_tables, language, table_mds = ocr_tuple
+            if not (ocr_text or "").strip() and not table_mds:
+                ocr_tuple = None
+        if ocr_tuple is None:
+            try:
+                ocr_text, has_tables, language, table_mds = self._ocr_png_bytes(
+                    png_bytes,
+                    prefer_tables=prefer_tables,
+                    form_kind=kind,
                 )
-                self.mode = ProcessingMode.CPU
-                self.mode_config = self.config.get_mode_config(ProcessingMode.CPU)
-                try:
-                    ensure_tessdata(
-                        self.config.TESSDATA_DIR, self.config.TESSERACT_LANGUAGES
-                    )
-                except Exception:
-                    pass
-                try:
-                    ocr_text, has_tables, language, table_mds = self._ocr_png_bytes(
-                        png_bytes,
-                        prefer_tables=True,
-                        form_kind=kind,
-                        force_tesseract=True,
-                    )
-                except Exception as cpu_exc:
+            except Exception as exc:
+                error_text = str(exc).lower()
+                if self._try_downgrade_ocr_backend(error_text, classification.page):
+                    try:
+                        ocr_text, has_tables, language, table_mds = self._ocr_png_bytes(
+                            png_bytes,
+                            prefer_tables=True,
+                            form_kind=kind,
+                            force_tesseract=self.mode_config.get("backend") == "tesseract",
+                        )
+                    except Exception as cpu_exc:
+                        ocr_failed = True
+                        failure_reason = f"ocr_failed: {cpu_exc}"
+                else:
                     ocr_failed = True
-                    failure_reason = f"ocr_failed: {cpu_exc}"
-            else:
-                ocr_failed = True
-                failure_reason = f"ocr_failed: {exc}"
+                    failure_reason = f"ocr_failed: {exc}"
 
         if not ocr_failed and not (ocr_text or "").strip() and not table_mds:
             if not (classification.residual_text or "").strip():
@@ -667,11 +767,12 @@ class KreuzbergOCREngine:
             ".webp": "image/webp",
         }.get(suffix, "image/png")
         _ = dpi_hint
+        force_tesseract = prefer_tables and self.mode_config.get("backend") == "tesseract"
         return self._ocr_png_bytes(
             data,
             prefer_tables=prefer_tables,
             mime_type=mime,
-            force_tesseract=prefer_tables,
+            force_tesseract=force_tesseract,
         )
 
     def _ocr_png_bytes(
@@ -683,7 +784,19 @@ class KreuzbergOCREngine:
         force_tesseract: bool = False,
         mime_type: str = "image/png",
     ):
-        """Run Kreuzberg OCR on image bytes."""
+        """Run OCR on image bytes."""
+        if (
+            not force_tesseract
+            and self.mode == ProcessingMode.PADDLE_GPU
+            and self.mode_config.get("backend") == "paddleocr"
+        ):
+            from core.paddle_gpu_ocr import ocr_png_bytes as paddle_gpu_ocr_png
+
+            return paddle_gpu_ocr_png(
+                png_bytes,
+                rec_batch_num=self._adaptive_rec_batch_num(),
+            )
+
         extraction_config, easyocr_kwargs = self._build_extraction_config(
             force_ocr=True,
             prefer_tables=prefer_tables or bool(form_kind in FORM_KINDS),
@@ -694,29 +807,7 @@ class KreuzbergOCREngine:
             kwargs["easyocr_kwargs"] = easyocr_kwargs
 
         result = kreuzberg.extract_bytes_sync(png_bytes, mime_type, **kwargs)
-
-        text = ""
-        if hasattr(result, "content") and result.content:
-            text = str(result.content)
-        elif hasattr(result, "text"):
-            text = str(result.text or "")
-
-        tables = getattr(result, "tables", None) or []
-        has_tables = bool(tables)
-        language = getattr(result, "language", None)
-        if language is None and hasattr(result, "metadata"):
-            meta = result.metadata
-            if isinstance(meta, dict):
-                language = meta.get("language")
-
-        table_mds: List[str] = []
-        if tables:
-            for table in tables:
-                md = getattr(table, "markdown", None) or getattr(table, "text", None)
-                if md:
-                    table_mds.append(str(md))
-
-        return text.strip(), has_tables, language, table_mds
+        return self._ocr_result_tuple(result)
 
     # ------------------------------------------------------------------
     # Config / helpers
@@ -762,14 +853,28 @@ class KreuzbergOCREngine:
                 tesseract_config=tesseract_config,
             )
         elif backend == "paddleocr":
+            paddle_kwargs = {
+                "language": language,
+                "enable_table_detection": prefer_tables
+                or self.mode_config.get("detect_tables", True),
+            }
+            model_tier = self.mode_config.get("model_tier")
+            if model_tier:
+                paddle_kwargs["model_tier"] = model_tier
+            rec_batch = self._adaptive_rec_batch_num()
+            if rec_batch:
+                paddle_kwargs["rec_batch_num"] = rec_batch
+            try:
+                paddle_cfg = kreuzberg.PaddleOcrConfig(**paddle_kwargs)
+            except TypeError:
+                paddle_cfg = kreuzberg.PaddleOcrConfig(
+                    language=language,
+                    enable_table_detection=paddle_kwargs["enable_table_detection"],
+                )
             ocr_config = kreuzberg.OcrConfig(
                 backend="paddleocr",
                 language=language,
-                paddle_ocr_config=kreuzberg.PaddleOcrConfig(
-                    language=language,
-                    enable_table_detection=prefer_tables
-                    or self.mode_config.get("detect_tables", True),
-                ),
+                paddle_ocr_config=paddle_cfg,
             )
         elif backend == "easyocr":
             ocr_config = kreuzberg.OcrConfig(backend="easyocr", language=language)
@@ -787,7 +892,11 @@ class KreuzbergOCREngine:
         pages = kreuzberg.PageConfig(extract_pages=False, insert_page_markers=False)
 
         acceleration = None
-        if use_gpu and backend == "easyocr":
+        if backend == "paddleocr":
+            # Native Kreuzberg PaddleOCR uses bundled CPU ORT. GPU mode is
+            # handled by core.paddle_gpu_ocr (RapidOCR + onnxruntime-gpu).
+            acceleration = kreuzberg.AccelerationConfig(provider="cpu")
+        elif use_gpu and backend == "easyocr":
             acceleration = kreuzberg.AccelerationConfig(provider="cuda")
 
         config = kreuzberg.ExtractionConfig(
@@ -805,11 +914,12 @@ class KreuzbergOCREngine:
         if page_class == "native":
             return "CPU", "poppler.pdftotext"
         if page_class == "hybrid":
-            return "CPU", "poppler.pdftotext+ocr_figures"
+            device = "GPU" if is_gpu_mode(self.mode) else "CPU"
+            return device, f"poppler.pdftotext+{self._ocr_library()}"
         return self._ocr_device(), self._ocr_library()
 
     def _ocr_device(self) -> str:
-        if self.mode == ProcessingMode.GPU and self.mode_config.get("use_gpu"):
+        if is_gpu_mode(self.mode) and self.mode_config.get("use_gpu"):
             return "GPU"
         return "CPU"
 
@@ -820,8 +930,254 @@ class KreuzbergOCREngine:
         if backend == "easyocr":
             return "kreuzberg+easyocr"
         if backend == "paddleocr":
+            if self.mode_config.get("use_gpu"):
+                return "rapidocr+onnxruntime-gpu"
             return "kreuzberg+paddleocr"
         return "kreuzberg+tesseract"
+
+    def _vram_gb(self) -> float:
+        try:
+            return float(gpu_detector.get_gpu_info().get("vram_gb") or 0)
+        except Exception:
+            return 0.0
+
+    def _adaptive_ocr_batch_size(self) -> int:
+        configured = int(self.mode_config.get("batch_size") or 1)
+        if not is_gpu_mode(self.mode):
+            return 1
+        vram = self._vram_gb()
+        threshold = float(getattr(self.config, "GPU_BATCH_VRAM_GB", 8))
+        if vram < threshold:
+            return min(configured, 2)
+        return max(1, configured)
+
+    def _adaptive_rec_batch_num(self) -> int:
+        configured = int(self.mode_config.get("rec_batch_num") or 6)
+        if not self.mode_config.get("use_gpu"):
+            return configured
+        vram = self._vram_gb()
+        if vram < 8:
+            return min(configured, 4)
+        return configured
+
+    def _try_downgrade_ocr_backend(self, error_text: str, page: int) -> bool:
+        err = (error_text or "").lower()
+        if self.mode == ProcessingMode.GPU and "easyocr" in err:
+            logger.warning(
+                "GPU OCR failed on page %s (%s). Falling back to CPU.",
+                page,
+                error_text,
+            )
+            self.mode = ProcessingMode.CPU
+            self.mode_config = self.config.get_mode_config(ProcessingMode.CPU)
+            try:
+                ensure_tessdata(
+                    self.config.TESSDATA_DIR, self.config.TESSERACT_LANGUAGES
+                )
+            except Exception:
+                pass
+            return True
+        return False
+
+    def _image_info_for_path(self, path: Path, info_by_num: Dict):
+        from core.page_classifier import _image_index_from_name
+
+        idx = _image_index_from_name(path)
+        if idx is None:
+            return None
+        return info_by_num.get(idx) or info_by_num.get(idx + 1)
+
+    def _append_unique_figures(
+        self,
+        body: str,
+        figure_entries: Sequence[Tuple[float, float, str, str]],
+    ) -> str:
+        parts = [body] if body else []
+        for _y, _x, fig, _path in figure_entries:
+            if fig and not is_duplicate_figure_text(fig, body):
+                parts.append(fig)
+        return "\n\n".join(p for p in parts if p).strip()
+
+    def _merge_body_with_figures(
+        self,
+        body: str,
+        layout,
+        figure_entries: Sequence[Tuple[float, float, str, str]],
+    ) -> str:
+        figures = sorted(
+            [(y, x, fig) for y, x, fig, _p in figure_entries if fig.strip()],
+            key=lambda t: (t[0], t[1]),
+        )
+        if not figures:
+            return body
+        if not body:
+            return "\n\n".join(fig for _y, _x, fig in figures)
+
+        page_h = float(getattr(layout, "height", 0) or 842)
+        lines = body.splitlines()
+        n = max(len(lines), 1)
+
+        def line_y(index: int) -> float:
+            return page_h * (0.08 + 0.84 * ((index + 0.5) / n))
+
+        parts: List[str] = []
+        buf: List[str] = []
+        fig_i = 0
+        for i, line in enumerate(lines):
+            y = line_y(i)
+            while fig_i < len(figures) and figures[fig_i][0] <= y:
+                if buf:
+                    parts.append("\n".join(buf).rstrip())
+                    buf = []
+                if not is_duplicate_figure_text(figures[fig_i][2], body):
+                    parts.append(figures[fig_i][2])
+                fig_i += 1
+            buf.append(line)
+        if buf:
+            parts.append("\n".join(buf).rstrip())
+        while fig_i < len(figures):
+            if not is_duplicate_figure_text(figures[fig_i][2], body):
+                parts.append(figures[fig_i][2])
+            fig_i += 1
+        merged = "\n\n".join(p for p in parts if p and p.strip())
+        return re.sub(r"\n{3,}", "\n\n", merged).strip()
+
+    def _render_classified_raster(
+        self,
+        pdf_path: Path,
+        classification,
+        images_dir: Path,
+        *,
+        dpi: Optional[int] = None,
+    ) -> Tuple[bytes, Path]:
+        dpi = dpi or self._dpi_for_kind(classification.doc_kind, classification.subtype)
+        page_index = classification.page - 1
+        try:
+            png_bytes = kreuzberg.render_pdf_page(str(pdf_path), page_index, dpi=dpi)
+        except Exception as exc:
+            raise RuntimeError(f"render_pdf_page failed: {exc}") from exc
+        raster_path = images_dir / f"raster_page_{classification.page:04d}.png"
+        raster_path.write_bytes(png_bytes)
+        return png_bytes, raster_path
+
+    def _ocr_result_tuple(self, result) -> Tuple[str, bool, Optional[str], List[str]]:
+        text = ""
+        if hasattr(result, "content") and result.content:
+            text = str(result.content)
+        elif hasattr(result, "text"):
+            text = str(result.text or "")
+        tables = getattr(result, "tables", None) or []
+        language = getattr(result, "language", None)
+        if language is None and hasattr(result, "metadata"):
+            meta = result.metadata
+            if isinstance(meta, dict):
+                language = meta.get("language")
+        table_mds: List[str] = []
+        for table in tables:
+            md = getattr(table, "markdown", None) or getattr(table, "text", None)
+            if md:
+                table_mds.append(str(md))
+        return text.strip(), bool(tables), language, table_mds
+
+    def _ocr_png_batch(
+        self,
+        png_list: Sequence[bytes],
+        classifications: Sequence,
+    ) -> Optional[List[Tuple[str, bool, Optional[str], List[str]]]]:
+        if self.mode == ProcessingMode.PADDLE_GPU:
+            from core.paddle_gpu_ocr import ocr_png_batch
+
+            return ocr_png_batch(
+                png_list,
+                rec_batch_num=self._adaptive_rec_batch_num(),
+            )
+        if len(png_list) < 2 or not hasattr(kreuzberg, "batch_extract_bytes_sync"):
+            return None
+        prefer_tables = any(
+            (c.doc_kind in FORM_KINDS) or c.force_image_ocr for c in classifications
+        )
+        extraction_config, easyocr_kwargs = self._build_extraction_config(
+            force_ocr=True,
+            prefer_tables=prefer_tables,
+        )
+        kwargs = {"config": extraction_config}
+        if easyocr_kwargs is not None:
+            kwargs["easyocr_kwargs"] = easyocr_kwargs
+        mime_types = ["image/png"] * len(png_list)
+        try:
+            results = kreuzberg.batch_extract_bytes_sync(
+                list(png_list), mime_types, **kwargs
+            )
+        except TypeError:
+            try:
+                results = kreuzberg.batch_extract_bytes_sync(
+                    list(png_list), mime_types, config=extraction_config
+                )
+            except Exception as exc:
+                logger.debug("batch_extract_bytes_sync failed: %s", exc)
+                return None
+        except Exception as exc:
+            logger.debug("batch_extract_bytes_sync failed: %s", exc)
+            return None
+        if not results or len(results) != len(png_list):
+            return None
+        return [self._ocr_result_tuple(item) for item in results]
+
+    def _process_image_page_run(
+        self,
+        *,
+        pdf_path: Path,
+        processo: str,
+        classifications: Sequence,
+        page_texts: Sequence[str],
+        images_dir: Path,
+        enable_handwriting: bool,
+        prefetch: ThreadPoolExecutor,
+    ) -> List[Dict]:
+        rendered: List[Tuple[bytes, Path]] = []
+        next_future = None
+        for i, classification in enumerate(classifications):
+            if next_future is not None:
+                png_bytes, raster_path = next_future.result()
+            else:
+                png_bytes, raster_path = self._render_classified_raster(
+                    pdf_path, classification, images_dir
+                )
+            rendered.append((png_bytes, raster_path))
+            if i + 1 < len(classifications):
+                nxt = classifications[i + 1]
+                next_future = prefetch.submit(
+                    self._render_classified_raster, pdf_path, nxt, images_dir
+                )
+            else:
+                next_future = None
+
+        ocr_results = self._ocr_png_batch(
+            [png for png, _path in rendered], classifications
+        )
+        pages: List[Dict] = []
+        for i, classification in enumerate(classifications):
+            png_bytes, raster_path = rendered[i]
+            raw_text = (
+                page_texts[classification.page - 1]
+                if classification.page - 1 < len(page_texts)
+                else ""
+            )
+            ocr_tuple = ocr_results[i] if ocr_results else None
+            pages.append(
+                self._process_classified_page(
+                    pdf_path=pdf_path,
+                    processo=processo,
+                    classification=classification,
+                    raw_text=raw_text,
+                    images_dir=images_dir,
+                    enable_handwriting=enable_handwriting,
+                    png_bytes=png_bytes,
+                    raster_path=raster_path,
+                    ocr_tuple=ocr_tuple,
+                )
+            )
+        return pages
 
     def _signature_lines_from_raw(self, raw_text: str) -> List[str]:
         import re

@@ -21,12 +21,15 @@ O wheel padrão no PyPI é **CPU** (`+cpu` ou sem `+cuXXX`). Se ele entrar no am
 - Resolver/instalar `torch` / `torchvision` **só** a partir do índice PyTorch CUDA.
 - Use o script `./scripts/update_deps.sh` (merge com constraints) em vez de `pip install torch` solto.
 
-### 2. Não misturar PaddleOCR / PaddlePaddle com o stack PyTorch
+### 2. Não misturar PaddlePaddle (Python) com o stack PyTorch
 
-O modo GPU deste app usa **EasyOCR + TrOCR (PyTorch)**. Pacotes `paddleocr`, `paddlepaddle`, `paddlepaddle-gpu`, `paddlex` competem por CUDA/OpenCV e já foram removidos do fluxo GPU.
+Pacotes `paddleocr`, `paddlepaddle`, `paddlepaddle-gpu` e `paddlex` competem por CUDA/OpenCV e **continuam proibidos**.
+
+O modo **PaddleOCR CPU** usa o backend nativo do Kreuzberg (ORT empacotado, CPU).
+O modo **PaddleOCR GPU** usa RapidOCR + `onnxruntime-gpu` (ver [`GPU_SETUP.md`](../GPU_SETUP.md)), porque o Kreuzberg 4.10 ignora `ORT_DYLIB_PATH`.
 
 ```bash
-# Se ainda estiverem instalados:
+# Se os pacotes Python ainda estiverem instalados:
 uv pip uninstall paddleocr paddlepaddle paddlepaddle-gpu paddlex
 ```
 

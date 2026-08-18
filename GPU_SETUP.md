@@ -1,7 +1,9 @@
-# GPU Setup (EasyOCR + TrOCR)
+# GPU Setup (EasyOCR / TrOCR / PaddleOCR GPU)
 
-GPU acceleration comes from the **PyTorch CUDA wheel**, not PaddleOCR.  
-Conflicts and install rules: [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md).
+EasyOCR e TrOCR usam o **wheel CUDA do PyTorch**.  
+PaddleOCR GPU usa **RapidOCR + onnxruntime-gpu** (PP-OCR ONNX na CUDA). Não instale os pacotes Python `paddleocr` / `paddlepaddle`.  
+O Kreuzberg 4.10 empacota ORT só-CPU — o backend nativo Paddle não acelera em GPU nesta versão.  
+Conflitos: [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md).
 
 ## Current target (RTX 50 / Blackwell)
 
@@ -42,8 +44,31 @@ Expect something like `2.13.0+cu130`, `CUDA: True`, and your RTX 50 GPU name.
 
 - **`+cpu` torch** — reinstall via the cu130 index / `update_deps.sh` (never mix PyPI CPU torch with CUDA).
 - **Python ≥ 3.13** — CUDA wheels often lag; recreate the venv on 3.12.
-- **Paddle packages present** — uninstall; they conflict with this stack.
+- **PaddlePaddle Python packages** — uninstall `paddleocr` / `paddlepaddle*`; they conflict with PyTorch. PaddleOCR GPU is RapidOCR + onnxruntime-gpu.
+- **`opencv-python` (GUI)** — RapidOCR lists it as dependency; keep **only** `opencv-python-headless`. `uv pip install rapidocr --no-deps` if pip tries to pull the GUI package.
 - **Sandbox / restricted env** — `torch.cuda` may fail inside Cursor sandbox while `nvidia-smi` works on the host; test outside the sandbox.
+
+## PaddleOCR GPU (RapidOCR + onnxruntime-gpu)
+
+O Kreuzberg 4.10.2 **empacota um ONNX Runtime só-CPU** (`ort-bundled`) e **ignora** `ORT_DYLIB_PATH`. Pedir `AccelerationConfig(provider="cuda")` no backend nativo sempre falha nesta versão.
+
+O modo **PaddleOCR GPU - 300 DPI** usa **RapidOCR** (modelos PP-OCR ONNX, reconhecedor latin PP-OCRv5) com **`onnxruntime-gpu` CUDA 13**, as mesmas libs CUDA do PyTorch `cu130`. Não instale `paddlepaddle-gpu`.
+
+```bash
+uv pip install "onnxruntime-gpu>=1.27" rapidocr
+# Use opencv-python-headless (já no projeto). Não instale opencv-python.
+```
+
+Verificação:
+
+```bash
+python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+# Deve incluir CUDAExecutionProvider
+```
+
+O bootstrap (`utils/ort_runtime.py`) coloca `torch/lib` no `PATH` e faz preload das DLLs CUDA antes das sessões ORT.
+
+Não misture isso com `paddlepaddle-gpu`.
 
 ## VLM fallback (formulários / tabelas)
 

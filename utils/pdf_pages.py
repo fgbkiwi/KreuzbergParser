@@ -2,26 +2,28 @@
 from __future__ import annotations
 
 import logging
-import shutil
 import subprocess
 from pathlib import Path
 from typing import List
 
+from utils.poppler import poppler_available, poppler_tool, subprocess_kwargs
+
 logger = logging.getLogger(__name__)
 
-
-def poppler_available() -> bool:
-    """Return True when pdftotext and pdfinfo are available on PATH."""
-    return shutil.which("pdftotext") is not None and shutil.which("pdfinfo") is not None
+__all__ = ["poppler_available", "get_page_count", "extract_pages_text"]
 
 
 def get_page_count(pdf_path: str | Path) -> int:
     """Return the number of physical pages in a PDF."""
     pdf_path = Path(pdf_path)
+    pdfinfo = poppler_tool("pdfinfo")
+    if pdfinfo is None:
+        raise RuntimeError("Poppler utilities (pdftotext/pdfinfo) are not available")
     output = subprocess.check_output(
-        ["pdfinfo", str(pdf_path)],
+        [pdfinfo, str(pdf_path)],
         stderr=subprocess.DEVNULL,
         text=True,
+        **subprocess_kwargs(),
     )
     for line in output.splitlines():
         if line.startswith("Pages:"):
@@ -39,11 +41,15 @@ def extract_pages_text(pdf_path: str | Path) -> List[str]:
     pdf_path = Path(pdf_path)
     if not poppler_available():
         raise RuntimeError("Poppler utilities (pdftotext/pdfinfo) are not available")
+    pdftotext = poppler_tool("pdftotext")
+    if pdftotext is None:
+        raise RuntimeError("Poppler utilities (pdftotext/pdfinfo) are not available")
 
     expected_pages = get_page_count(pdf_path)
     raw_text = subprocess.check_output(
-        ["pdftotext", "-layout", str(pdf_path), "-"],
+        [pdftotext, "-layout", str(pdf_path), "-"],
         stderr=subprocess.DEVNULL,
+        **subprocess_kwargs(),
     ).decode("utf-8", "replace")
 
     if "\f" in raw_text:
@@ -60,13 +66,13 @@ def extract_pages_text(pdf_path: str | Path) -> List[str]:
         )
 
     logger.info("Falling back to per-page pdftotext extraction for %s", pdf_path.name)
-    return [_extract_single_page_text(pdf_path, page_num) for page_num in range(1, expected_pages + 1)]
+    return [_extract_single_page_text(pdf_path, page_num, pdftotext) for page_num in range(1, expected_pages + 1)]
 
 
-def _extract_single_page_text(pdf_path: Path, page_num: int) -> str:
+def _extract_single_page_text(pdf_path: Path, page_num: int, pdftotext: str) -> str:
     text = subprocess.check_output(
         [
-            "pdftotext",
+            pdftotext,
             "-f",
             str(page_num),
             "-l",
@@ -76,5 +82,6 @@ def _extract_single_page_text(pdf_path: Path, page_num: int) -> str:
             "-",
         ],
         stderr=subprocess.DEVNULL,
+        **subprocess_kwargs(),
     ).decode("utf-8", "replace")
     return text.strip()

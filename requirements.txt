@@ -213,3 +213,23 @@ torchvision==0.28.0+cu130
     # via -r /tmp/update_deps.78LRzV/torch.in
 triton==3.7.1
     # via torch
+antlr4-python3-runtime==4.9.3
+    # via omegaconf
+charset-normalizer==3.5.1
+    # via requests
+colorlog==6.12.0
+    # via rapidocr
+flatbuffers==25.12.19
+    # via onnxruntime-gpu
+omegaconf==2.3.1
+    # via rapidocr
+onnxruntime-gpu==1.29.0
+    # via -r requirements.in
+protobuf==7.35.1
+    # via onnxruntime-gpu
+rapidocr==3.9.2
+    # via -r requirements.in
+requests==2.34.2
+    # via rapidocr
+urllib3==2.7.0
+    # via requests

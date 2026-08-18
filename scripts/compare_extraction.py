@@ -204,8 +204,11 @@ def main() -> int:
         from utils.tessdata import ensure_tessdata
 
         ensure_tessdata(Config.TESSDATA_DIR, Config.TESSERACT_LANGUAGES)
+        from utils.poppler import ensure_poppler
+
+        ensure_poppler(Config.POPPLER_DIR)
     except Exception as exc:
-        logger.warning("Tessdata setup skipped: %s", exc)
+        logger.warning("Tessdata/Poppler setup skipped: %s", exc)
 
     logger.info(
         "Comparando %s página(s) de %s contra %s (VLM=%s)",

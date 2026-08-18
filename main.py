@@ -11,7 +11,14 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Kreuzberg loads ONNX Runtime from ORT_DYLIB_PATH. CUDA libs must be on the
+# loader path before `import kreuzberg` (ui.app → kreuzberg_engine).
+from utils.ort_runtime import prepare_paddle_gpu_runtime, log_ort_status
+
+prepare_paddle_gpu_runtime()
+
 from utils.logger import setup_logger
+from utils.poppler import ensure_poppler
 from utils.tessdata import ensure_tessdata
 from config import Config
 from ui.app import run_app
@@ -44,6 +51,21 @@ def main():
             "Não foi possível preparar os dados de idioma do Tesseract. "
             "O OCR em páginas escaneadas pode falhar."
         )
+
+    # Page classification needs Poppler (pdftotext/pdfinfo/pdfimages)
+    try:
+        ensure_poppler(config.POPPLER_DIR)
+    except Exception:
+        logger.exception(
+            "Não foi possível preparar o Poppler. "
+            "A classificação de páginas nativas vs escaneadas vai falhar."
+        )
+
+    # Kreuzberg native PaddleOCR GPU uses onnxruntime-gpu via ORT_DYLIB_PATH
+    try:
+        log_ort_status()
+    except Exception:
+        logger.debug("ONNX Runtime bootstrap skipped", exc_info=True)
 
     # Log GPU status
     from utils.gpu_detector import gpu_detector

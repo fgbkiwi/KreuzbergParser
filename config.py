@@ -12,6 +12,22 @@ class ProcessingMode(str, Enum):
     GPU = "gpu"
     CPU = "cpu"
     EXPRESS = "express"
+    PADDLE_GPU = "paddle_gpu"
+    PADDLE_CPU = "paddle_cpu"
+
+
+def is_gpu_mode(mode) -> bool:
+    """True for EasyOCR GPU and PaddleOCR GPU."""
+    value = mode.value if isinstance(mode, ProcessingMode) else str(mode or "")
+    return value in (ProcessingMode.GPU.value, ProcessingMode.PADDLE_GPU.value)
+
+
+def is_paddle_mode(mode) -> bool:
+    value = mode.value if isinstance(mode, ProcessingMode) else str(mode or "")
+    return value in (
+        ProcessingMode.PADDLE_GPU.value,
+        ProcessingMode.PADDLE_CPU.value,
+    )
 
 
 class Config:
@@ -25,6 +41,8 @@ class Config:
     # Local tessdata for Kreuzberg's embedded Tesseract (por/eng traineddata)
     TESSDATA_DIR = BASE_DIR / "tessdata"
     TESSERACT_LANGUAGES = ("por", "eng")
+    # Local Poppler binaries on Windows (pdftotext/pdfinfo/pdfimages)
+    POPPLER_DIR = BASE_DIR / "poppler"
     
     # ===== KREUZBERG CONFIGURATION =====
     # Kreuzberg handles most thresholds automatically
@@ -101,11 +119,45 @@ class Config:
             "enable_trocr": False,
             "skip_preprocessing": True,
             "force_ocr": False
-        }
+        },
+        ProcessingMode.PADDLE_GPU: {
+            "backend": "paddleocr",
+            "use_gpu": True,
+            "batch_size": 4,
+            "dpi": 300,
+            "dpi_form": 300,
+            "dpi_screenshot": 220,
+            "detect_tables": True,
+            "language": "por",
+            "enable_trocr": True,
+            "force_ocr": False,
+            "model_tier": "server",
+            "rec_batch_num": 8,
+        },
+        ProcessingMode.PADDLE_CPU: {
+            "backend": "paddleocr",
+            "use_gpu": False,
+            "batch_size": 1,
+            "dpi": 300,
+            "dpi_form": 300,
+            "dpi_screenshot": 220,
+            "detect_tables": True,
+            "language": "por",
+            "enable_trocr": False,
+            "force_ocr": False,
+            "model_tier": "mobile",
+            "rec_batch_num": 6,
+        },
     }
-    
+
+    # ===== LETTERHEAD / FOOTER (petitions) =====
+    LETTERHEAD_TOP_RATIO = 0.18
+    FOOTER_BOTTOM_RATIO = 0.15
+    LETTERHEAD_REPEAT_MIN_PAGES = 3
+
     # ===== GPU SETTINGS =====
     MIN_VRAM_GB = 2  # Minimum VRAM for GPU mode. Original value was 4. Lower values can cause OOM or slower/unstable runs.
+    GPU_BATCH_VRAM_GB = 8  # Full OCR batch (4) when VRAM is at least this.
 
     # ===== STRUCTURED FORM EXTRACTION (LlamaParse-style) =====
     # Deterministic Tesseract-TSV + geometry templates for TRCT / ficha / recibo / FGTS.
@@ -218,8 +270,9 @@ class Config:
     LOG_TO_CONSOLE = True
     
     # ===== UI SETTINGS =====
-    WINDOW_WIDTH = 1100
+    WINDOW_WIDTH = 1140
     WINDOW_HEIGHT = 920
+    MODE_OPTIONS_PANEL_HEIGHT = 188
     WINDOW_TITLE = "OCR Inteligente para PDFs Judiciais (Powered by Kreuzberg)"
     THEME_MODE = "light"
     
@@ -230,8 +283,10 @@ class Config:
         cls.LOG_DIR.mkdir(exist_ok=True)
         cls.OUTPUT_DIR.mkdir(exist_ok=True)
         cls.TESSDATA_DIR.mkdir(exist_ok=True)
+        cls.POPPLER_DIR.mkdir(exist_ok=True)
     
     @classmethod
     def get_mode_config(cls, mode: ProcessingMode) -> dict:
         """Get configuration for specific processing mode"""
-        return cls.MODE_CONFIGS.get(mode, cls.MODE_CONFIGS[ProcessingMode.EXPRESS])
+        base = cls.MODE_CONFIGS.get(mode, cls.MODE_CONFIGS[ProcessingMode.EXPRESS])
+        return dict(base)

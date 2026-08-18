@@ -13,6 +13,9 @@ tessdata/
 *.traineddata
 *.traineddata.partial
 
+# Poppler Windows binaries (downloaded on first run)
+poppler/
+
 # Python cache
 __pycache__/
 *.py[cod]

@@ -18,3 +18,8 @@ flet
 tqdm
 psutil
 python-dotenv
+
+# PaddleOCR GPU: RapidOCR (PP-OCR ONNX) + CUDA 13 ONNX Runtime.
+# Kreuzberg 4.10 bundles CPU-only ORT, so GPU Paddle cannot use AccelerationConfig.
+onnxruntime-gpu>=1.27
+rapidocr

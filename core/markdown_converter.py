@@ -32,6 +32,9 @@ _DOC_NUM_LINE_RE = re.compile(
 _PROC_NUM_LINE_RE = re.compile(
     r"(?mi)^\s*N[uú]mero do processo\s*:.*$"
 )
+_FIGURE_HEADING_RE = re.compile(
+    r"(?mi)^###\s*Quadro\s*/\s*figura\s+\d+\s*$"
+)
 
 
 class MarkdownConverter:
@@ -228,6 +231,8 @@ class MarkdownConverter:
             if _DOC_NUM_LINE_RE.match(line):
                 continue
             if _PROC_NUM_LINE_RE.match(line):
+                continue
+            if _FIGURE_HEADING_RE.match(line):
                 continue
             out_lines.append(line)
 
