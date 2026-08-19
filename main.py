@@ -11,8 +11,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Kreuzberg loads ONNX Runtime from ORT_DYLIB_PATH. CUDA libs must be on the
-# loader path before `import kreuzberg` (ui.app → kreuzberg_engine).
+# Kreuzberg native PaddleOCR GPU: onnxruntime-gpu + ORT_DYLIB_PATH before
+# `import kreuzberg` (see docs.kreuzberg.dev GPU acceleration).
 from utils.ort_runtime import prepare_paddle_gpu_runtime, log_ort_status
 
 prepare_paddle_gpu_runtime()
@@ -61,7 +61,7 @@ def main():
             "A classificação de páginas nativas vs escaneadas vai falhar."
         )
 
-    # Kreuzberg native PaddleOCR GPU uses onnxruntime-gpu via ORT_DYLIB_PATH
+    # Kreuzberg native PaddleOCR GPU: ORT_DYLIB_PATH + onnxruntime-gpu
     try:
         log_ort_status()
     except Exception:

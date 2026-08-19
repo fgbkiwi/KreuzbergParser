@@ -8,7 +8,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 
 _PROCESS_FILE_HANDLER: Optional[logging.Handler] = None
@@ -16,6 +16,16 @@ _PROCESS_LOG_PATH: Optional[Path] = None
 _SESSION_FILE_HANDLER: Optional[logging.Handler] = None
 _SESSION_LOG_PATH: Optional[Path] = None
 _OCR_SESSION_TS_RE = re.compile(r"(\d{8}_\d{6})\.log$")
+
+
+class _SkipPageAuditOnConsole(logging.Filter):
+    """Keep PAGE_START/PAGE_END in file logs; they flood the terminal."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.msg
+        if not isinstance(msg, str):
+            return True
+        return not (msg.startswith("PAGE_START") or msg.startswith("PAGE_END"))
 
 
 def setup_logger(name: Optional[str] = None, config=None) -> logging.Logger:
@@ -43,6 +53,7 @@ def setup_logger(name: Optional[str] = None, config=None) -> logging.Logger:
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(logging.INFO)
             console_handler.setFormatter(formatter)
+            console_handler.addFilter(_SkipPageAuditOnConsole())
             root.addHandler(console_handler)
 
         if config.LOG_TO_FILE:
@@ -247,6 +258,15 @@ def log_page_end(
         chars,
         extra,
     )
+
+
+def log_visible_alert(logger: logging.Logger, lines: Sequence[str]) -> None:
+    """Emit a high-visibility ERROR banner (file + console)."""
+    border = "=" * 78
+    logger.error(border)
+    for line in lines:
+        logger.error("%s", line if line else " ")
+    logger.error(border)
 
 
 def _sanitize_filename(value: str) -> str:

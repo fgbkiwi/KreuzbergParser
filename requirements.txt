@@ -64,12 +64,14 @@ networkx==3.6.1
     #   scikit-image
 ninja==1.13.0
     # via easyocr
-numpy==2.4.4
+numpy==2.3.5
     # via
     #   -c /tmp/update_deps.78LRzV/base.constraints.txt
+    #   -r requirements.in
     #   easyocr
     #   imageio
-    #   opencv-python-headless
+    #   opencv-contrib-python
+    #   paddlex
     #   scikit-image
     #   scipy
     #   shapely
@@ -77,8 +79,8 @@ numpy==2.4.4
     #   transformers
 oauthlib==3.3.1
     # via flet
-opencv-python-headless==5.0.0.93
-    # via easyocr
+opencv-contrib-python==4.10.0.84
+    # via paddlex[ocr-core]
 packaging==26.2
     # via
     #   huggingface-hub
@@ -213,23 +215,41 @@ torchvision==0.28.0+cu130
     # via -r /tmp/update_deps.78LRzV/torch.in
 triton==3.7.1
     # via torch
-antlr4-python3-runtime==4.9.3
-    # via omegaconf
-charset-normalizer==3.5.1
-    # via requests
+aistudio-sdk==0.3.9
+    # via paddlex
+chardet==7.6.0
+    # via paddlex
 colorlog==6.12.0
-    # via rapidocr
+    # via paddlex
+imagesize==2.0.0
+    # via paddlex
+modelscope==1.39.1
+    # via paddlex
+paddleocr==3.7.0
+    # via -r requirements.in
+paddlex==3.7.2
+    # via paddleocr
+pandas==3.0.5
+    # via paddlex
+prettytable==3.18.0
+    # via paddlex
+pypdfium2==5.13.0
+    # via paddlex
+python-dateutil==2.9.0.post0
+    # via pandas
+py-cpuinfo==9.0.0
+    # via paddlex
+ruamel.yaml==0.19.1
+    # via paddlex
+tzdata==2026.3
+    # via pandas
+ujson==5.13.0
+    # via paddlex
+wcwidth==0.8.2
+    # via prettytable
 flatbuffers==25.12.19
     # via onnxruntime-gpu
-omegaconf==2.3.1
-    # via rapidocr
 onnxruntime-gpu==1.29.0
     # via -r requirements.in
 protobuf==7.35.1
     # via onnxruntime-gpu
-rapidocr==3.9.2
-    # via -r requirements.in
-requests==2.34.2
-    # via rapidocr
-urllib3==2.7.0
-    # via requests

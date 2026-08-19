@@ -9,8 +9,8 @@ Orientação atual de GPU: [`GPU_SETUP.md`](../GPU_SETUP.md).
 |------|--------|
 | Python | **3.12** (wheels CUDA; evitar ≥3.13 neste projeto) |
 | PyTorch | **2.13.0+cu130** |
-| GPU alvo | **RTX 50-series / Blackwell** (`sm_120`) |
-| OpenCV | `opencv-python-headless` (não o pacote com GUI) |
+| GPU alvo | **NVIDIA GeForce RTX 5060 Ti 16 GB** (Blackwell `sm_120`) |
+| OpenCV | um único `cv2`: `opencv-contrib-python==4.10.0.84` (PaddleOCR GPU) |
 
 ## Regras — não misturar
 
@@ -21,24 +21,23 @@ O wheel padrão no PyPI é **CPU** (`+cpu` ou sem `+cuXXX`). Se ele entrar no am
 - Resolver/instalar `torch` / `torchvision` **só** a partir do índice PyTorch CUDA.
 - Use o script `./scripts/update_deps.sh` (merge com constraints) em vez de `pip install torch` solto.
 
-### 2. Não misturar PaddlePaddle (Python) com o stack PyTorch
+### 2. Não misturar PaddlePaddle (framework) com o stack PyTorch
 
-Pacotes `paddleocr`, `paddlepaddle`, `paddlepaddle-gpu` e `paddlex` competem por CUDA/OpenCV e **continuam proibidos**.
+`paddlepaddle` / `paddlepaddle-gpu` e `rapidocr` competem por CUDA e **continuam proibidos**.
 
-O modo **PaddleOCR CPU** usa o backend nativo do Kreuzberg (ORT empacotado, CPU).
-O modo **PaddleOCR GPU** usa RapidOCR + `onnxruntime-gpu` (ver [`GPU_SETUP.md`](../GPU_SETUP.md)), porque o Kreuzberg 4.10 ignora `ORT_DYLIB_PATH`.
+O modo **PaddleOCR GPU** configura o Kreuzberg nativo (`AccelerationConfig(provider="cuda")` + `ORT_DYLIB_PATH` + `onnxruntime-gpu`). O wheel 4.10.2 empacota ORT só-CPU e ignora `ORT_DYLIB_PATH`; nesse caso o app usa `paddleocr` + `onnxruntime-gpu` (sem `paddlepaddle-gpu`). Se o CUDA não carregar, o modo **falha** — não cai para CPU.
 
 ```bash
-# Se os pacotes Python ainda estiverem instalados:
-uv pip uninstall paddleocr paddlepaddle paddlepaddle-gpu paddlex
+# Framework Paddle / RapidOCR (proibidos):
+uv pip uninstall paddlepaddle paddlepaddle-gpu rapidocr
 ```
 
-### 3. Preferir `opencv-python-headless`; não instalar `opencv-python` em paralelo
+### 3. Um único pacote OpenCV (`cv2`)
 
-Os dois pacotes fornecem o módulo `cv2`. Ter os dois no mesmo venv causa imports imprevisíveis.
+Vários wheels (`opencv-python`, `opencv-python-headless`, `opencv-contrib-python`) fornecem o módulo `cv2`. Ter dois no mesmo venv causa imports imprevisíveis.
 
-- Manter: `opencv-python-headless`
-- Evitar: `opencv-python` (GUI)
+- Com PaddleOCR GPU: manter **`opencv-contrib-python==4.10.0.84`**
+- Evitar: `opencv-python` e `opencv-python-headless` em paralelo com o contrib
 
 ### 4. Toolkit CUDA do sistema: só se for compilar kernels (vLLM / FlashInfer)
 

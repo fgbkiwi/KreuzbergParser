@@ -1,0 +1,28 @@
+# Perfil nativo Kreuzberg para PaddleOCR GPU (RTX 5060 Ti, device 0).
+# A UI aplica ExtractionConfig por modo em código (CPU vs GPU).
+# CLI: kreuzberg extract arquivo.pdf --config kreuzberg.toml
+# Docs: https://docs.kreuzberg.dev/reference/configuration/#provider-behavior
+
+force_ocr = false
+
+[ocr]
+backend = "paddleocr"
+language = "pt"
+
+[ocr.paddle_ocr_config]
+model_tier = "server"
+padding = 16
+rec_batch_num = 16
+enable_table_detection = true
+det_limit_side_len = 1920
+
+[acceleration]
+provider = "cuda"
+device_id = 0
+
+[language_detection]
+enabled = true
+
+[images]
+extract_images = false
+target_dpi = 300

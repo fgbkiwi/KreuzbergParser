@@ -17,8 +17,8 @@ KreuzbergParser/
 │
 ├── README.md
 ├── QUICKSTART.md
-├── GPU_SETUP.md                 # RTX 50 / cu130 / Nemotron / Ollama
-├── CUDA_SETUP_GTX860M.md        # Histórico Maxwell
+├── GPU_SETUP.md                 # RTX 5060 Ti / cu130 / Nemotron / Ollama
+├── kreuzberg.toml               # Perfil nativo PaddleOCR GPU (CUDA)
 ├── docs/DEPENDENCY_CONFLICTS.md
 │
 ├── core/
@@ -30,6 +30,7 @@ KreuzbergParser/
 │   ├── labor_forms.py           # Formatadores por tipo de doc
 │   ├── vlm_ocr.py               # Cliente OpenAI-compatível
 │   ├── handwriting_detector.py  # TrOCR opcional
+│   ├── paddle_gpu_ocr.py        # PaddleOCR oficial + CUDA (fallback GPU)
 │   └── markdown_converter.py
 │
 ├── ui/app.py                    # Flet: modos, dropdown VLM

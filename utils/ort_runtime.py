@@ -1,22 +1,28 @@
 """
-ONNX Runtime bootstrap for PaddleOCR GPU.
+ONNX Runtime bootstrap for Kreuzberg native PaddleOCR GPU.
 
-Kreuzberg 4.10.2 embeds a CPU-only ORT and skips ORT_DYLIB_PATH, so CUDA
-PaddleOCR runs through Python onnxruntime-gpu (RapidOCR) instead. This
-module puts PyTorch CUDA/cuDNN DLLs on the loader path and preloads them
-before any InferenceSession is created.
+Docs: https://docs.kreuzberg.dev/getting-started/installation/#gpu-acceleration
+  - Kreuzberg bundles CPU-only ONNX Runtime.
+  - GPU: pip/uv install onnxruntime-gpu and set ORT_DYLIB_PATH to the
+    GPU library (Windows: .../onnxruntime/capi/onnxruntime.dll).
+
+CUDA/cuDNN from nvidia-* / PyTorch wheels must be on the loader path
+*before* onnxruntime or kreuzberg are imported. Do not import torch
+first — that skips onnxruntime.preload_dlls().
 """
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
 _cuda_ready: Optional[bool] = None
+_CUDA_PROVIDER = "CUDAExecutionProvider"
 
 
 def _unique_existing_dirs(candidates: Iterable[Path]) -> List[Path]:
@@ -37,42 +43,37 @@ def _unique_existing_dirs(candidates: Iterable[Path]) -> List[Path]:
     return out
 
 
+def _package_search_paths(name: str) -> List[Path]:
+    """Locate a package directory without importing it (avoids torch-before-ORT)."""
+    spec = importlib.util.find_spec(name)
+    if spec is None:
+        return []
+    paths: List[Path] = []
+    for loc in spec.submodule_search_locations or []:
+        paths.append(Path(loc))
+    if spec.origin:
+        paths.append(Path(spec.origin).resolve().parent)
+    return paths
+
+
 def _nvidia_lib_dirs() -> List[Path]:
     """CUDA/cuDNN dirs shipped by nvidia-* wheels and PyTorch."""
     candidates: List[Path] = []
-    try:
-        import nvidia  # type: ignore
-
-        roots = getattr(nvidia, "__path__", None) or []
-        for root in roots:
-            base = Path(root)
-            if not base.is_dir():
+    for root in _package_search_paths("nvidia"):
+        if not root.is_dir():
+            continue
+        for sub in root.iterdir():
+            if not sub.is_dir():
                 continue
-            for sub in base.iterdir():
-                if not sub.is_dir():
-                    continue
-                for name in ("bin", "lib", "lib64"):
-                    candidates.append(sub / name)
-    except Exception:
-        pass
+            for name in ("bin", "lib", "lib64"):
+                candidates.append(sub / name)
 
-    try:
-        import torch
-
-        torch_dir = Path(torch.__file__).resolve().parent
+    for torch_dir in _package_search_paths("torch"):
         candidates.append(torch_dir / "lib")
         candidates.append(torch_dir / "bin")
-    except Exception:
-        pass
 
-    try:
-        import onnxruntime  # type: ignore
-
-        paths = getattr(onnxruntime, "__path__", None)
-        if paths:
-            candidates.append(Path(list(paths)[0]) / "capi")
-    except Exception:
-        pass
+    for ort_dir in _package_search_paths("onnxruntime"):
+        candidates.append(ort_dir / "capi")
 
     for env_key in ("CUDA_PATH", "CUDA_HOME"):
         root = (os.environ.get(env_key) or "").strip()
@@ -110,15 +111,11 @@ def _add_library_dirs(dirs: List[Path]) -> None:
 
 
 def _capi_dir() -> Optional[Path]:
-    try:
-        import onnxruntime  # type: ignore
-    except ImportError:
-        return None
-    paths = getattr(onnxruntime, "__path__", None)
-    if not paths:
-        return None
-    capi = Path(list(paths)[0]) / "capi"
-    return capi if capi.is_dir() else None
+    for ort_dir in _package_search_paths("onnxruntime"):
+        capi = ort_dir / "capi"
+        if capi.is_dir():
+            return capi
+    return None
 
 
 def _find_ort_library(capi: Path) -> Optional[Path]:
@@ -174,19 +171,46 @@ def ort_cuda_available() -> bool:
         import onnxruntime  # type: ignore
 
         providers = [str(p) for p in onnxruntime.get_available_providers()]
-        return any("CUDA" in p.upper() for p in providers)
+        return _CUDA_PROVIDER in providers
     except Exception:
         return False
 
 
+def session_uses_cuda(session: Any) -> bool:
+    """True when an InferenceSession is actually bound to CUDA (not CPU fallback)."""
+    try:
+        providers = [str(p) for p in session.get_providers()]
+    except Exception:
+        return False
+    return bool(providers) and providers[0] == _CUDA_PROVIDER
+
+
 def ensure_ort_dylib_path() -> bool:
-    """Point ORT_DYLIB_PATH at GPU onnxruntime (used by non-bundled ORT loaders)."""
+    """
+    Point ORT_DYLIB_PATH at the GPU ONNX Runtime shared library.
+
+    Kreuzberg docs (Windows): set ORT_DYLIB_PATH to onnxruntime.dll.
+    Python docs also mention the capi/ directory; the file path is what
+    the `ort` crate loads. Prefer the DLL/SO/DYLIB over a directory.
+    """
     existing = (os.environ.get("ORT_DYLIB_PATH") or "").strip()
     if existing:
         path = Path(existing)
-        if path.exists():
+        if path.is_file():
+            logger.info("ORT_DYLIB_PATH=%s", path)
             return True
-        logger.warning("ORT_DYLIB_PATH=%s does not exist", existing)
+        if path.is_dir():
+            library = _find_ort_library(path)
+            if library is not None:
+                os.environ["ORT_DYLIB_PATH"] = str(library)
+                logger.info("ORT_DYLIB_PATH=%s (resolved from directory)", library)
+                return True
+            logger.warning(
+                "ORT_DYLIB_PATH=%s is a directory without onnxruntime.dll/.so/.dylib",
+                existing,
+            )
+        else:
+            logger.warning("ORT_DYLIB_PATH=%s does not exist", existing)
 
     capi = _capi_dir()
     if capi is None:
@@ -194,25 +218,24 @@ def ensure_ort_dylib_path() -> bool:
         return False
 
     library = _find_ort_library(capi)
-    target = str(library if library is not None else capi)
-    os.environ["ORT_DYLIB_PATH"] = target
-    logger.info("ORT_DYLIB_PATH=%s", target)
+    if library is None:
+        logger.warning("onnxruntime-gpu capi has no onnxruntime shared library: %s", capi)
+        return False
+    os.environ["ORT_DYLIB_PATH"] = str(library)
+    logger.info("ORT_DYLIB_PATH=%s", library)
     return True
 
 
 def prepare_paddle_gpu_runtime() -> bool:
     """
-    Load CUDA libs and confirm Python onnxruntime-gpu has CUDA EP.
+    Load CUDA libs, set ORT_DYLIB_PATH, confirm onnxruntime-gpu has CUDA EP.
 
-    Must run before RapidOCR creates InferenceSessions.
+    Must run before `import kreuzberg` so the native bindings can see
+    ORT_DYLIB_PATH. Does not import torch first.
     """
     global _cuda_ready
     if _cuda_ready is True:
         return True
-    try:
-        import torch  # noqa: F401 — importing torch preloads CUDA DLLs
-    except Exception:
-        logger.debug("torch import skipped during ORT bootstrap", exc_info=True)
     preload_cuda_runtime()
     ensure_ort_dylib_path()
     ready = ort_cuda_available()
@@ -225,6 +248,39 @@ def prepare_paddle_gpu_runtime() -> bool:
             "PaddleOCR GPU requires: pip install onnxruntime-gpu>=1.27"
         )
     return ready
+
+
+def ort_runtime_snapshot() -> Dict[str, Any]:
+    """Facts for diagnosing Kreuzberg native CUDA vs Python onnxruntime-gpu."""
+    capi = _capi_dir()
+    cuda_lib = None
+    if capi is not None:
+        for name in (
+            "onnxruntime_providers_cuda.dll",
+            "libonnxruntime_providers_cuda.so",
+            "libonnxruntime_providers_cuda.dylib",
+        ):
+            candidate = capi / name
+            if candidate.is_file():
+                cuda_lib = str(candidate)
+                break
+    version = ""
+    providers: List[str] = []
+    try:
+        import onnxruntime  # type: ignore
+
+        version = str(getattr(onnxruntime, "__version__", "") or "")
+        providers = [str(p) for p in onnxruntime.get_available_providers()]
+    except Exception as exc:
+        version = f"import_failed:{exc}"
+    return {
+        "onnxruntime_version": version,
+        "onnxruntime_providers": providers,
+        "ORT_DYLIB_PATH": os.environ.get("ORT_DYLIB_PATH") or "",
+        "capi_dir": str(capi) if capi else "",
+        "cuda_provider_library": cuda_lib or "",
+        "platform": sys.platform,
+    }
 
 
 def log_ort_status() -> None:

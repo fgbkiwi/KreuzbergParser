@@ -88,7 +88,7 @@ class Config:
         ProcessingMode.GPU: {
             "backend": "easyocr",  # GPU-accelerated first pass
             "use_gpu": True,
-            "batch_size": 4,
+            "batch_size": 8,
             "dpi": 300,
             "dpi_form": 300,
             "dpi_screenshot": 220,
@@ -123,7 +123,7 @@ class Config:
         ProcessingMode.PADDLE_GPU: {
             "backend": "paddleocr",
             "use_gpu": True,
-            "batch_size": 4,
+            "batch_size": 8,
             "dpi": 300,
             "dpi_form": 300,
             "dpi_screenshot": 220,
@@ -132,7 +132,9 @@ class Config:
             "enable_trocr": True,
             "force_ocr": False,
             "model_tier": "server",
-            "rec_batch_num": 8,
+            "padding": 16,
+            "rec_batch_num": 16,
+            "det_limit_side_len": 1920,
         },
         ProcessingMode.PADDLE_CPU: {
             "backend": "paddleocr",
@@ -146,7 +148,9 @@ class Config:
             "enable_trocr": False,
             "force_ocr": False,
             "model_tier": "mobile",
+            "padding": 10,
             "rec_batch_num": 6,
+            "det_limit_side_len": 960,
         },
     }
 
@@ -155,9 +159,12 @@ class Config:
     FOOTER_BOTTOM_RATIO = 0.15
     LETTERHEAD_REPEAT_MIN_PAGES = 3
 
-    # ===== GPU SETTINGS =====
-    MIN_VRAM_GB = 2  # Minimum VRAM for GPU mode. Original value was 4. Lower values can cause OOM or slower/unstable runs.
-    GPU_BATCH_VRAM_GB = 8  # Full OCR batch (4) when VRAM is at least this.
+    # ===== GPU SETTINGS (RTX 5060 Ti 16GB) =====
+    # CUDA device index for AccelerationConfig / PaddleOCR (override: CUDA_DEVICE_ID).
+    CUDA_DEVICE_ID = int(os.environ.get("CUDA_DEVICE_ID", "0"))
+    MIN_VRAM_GB = 4  # Minimum VRAM for GPU modes
+    GPU_BATCH_VRAM_GB = 8  # Full page batch when VRAM is at least this
+    GPU_HIGH_VRAM_GB = 12  # Use full rec_batch_num (16) at or above this
 
     # ===== STRUCTURED FORM EXTRACTION (LlamaParse-style) =====
     # Deterministic Tesseract-TSV + geometry templates for TRCT / ficha / recibo / FGTS.

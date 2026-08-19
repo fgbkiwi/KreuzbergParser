@@ -1,15 +1,15 @@
 # GPU Setup (EasyOCR / TrOCR / PaddleOCR GPU)
 
 EasyOCR e TrOCR usam o **wheel CUDA do PyTorch**.  
-PaddleOCR GPU usa **RapidOCR + onnxruntime-gpu** (PP-OCR ONNX na CUDA). Não instale os pacotes Python `paddleocr` / `paddlepaddle`.  
-O Kreuzberg 4.10 empacota ORT só-CPU — o backend nativo Paddle não acelera em GPU nesta versão.  
+PaddleOCR **CPU** usa o backend nativo do Kreuzberg (`AccelerationConfig(provider="cpu")`).  
+PaddleOCR **GPU** segue a documentação do Kreuzberg: `AccelerationConfig(provider="cuda")` + `onnxruntime-gpu` + `ORT_DYLIB_PATH`. O wheel 4.10.2 ainda empacota ORT só-CPU (`ort-bundled`) e ignora `ORT_DYLIB_PATH`; nesse caso o app usa PaddleOCR oficial + CUDA (não cai para CPU).  
 Conflitos: [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md).
 
 ## Current target (RTX 50 / Blackwell)
 
 | Item | Value |
 |------|--------|
-| GPU | RTX 50-series (e.g. RTX 5060 Ti), Blackwell `sm_120` |
+| GPU | NVIDIA GeForce RTX 5060 Ti (16 GB), Blackwell `sm_120` |
 | Driver | 580+ (`nvidia-smi` reports CUDA 13.0 capability) |
 | Python | **3.12** |
 | PyTorch | **2.13.0+cu130** (or newer `+cu130`) |
@@ -44,31 +44,37 @@ Expect something like `2.13.0+cu130`, `CUDA: True`, and your RTX 50 GPU name.
 
 - **`+cpu` torch** — reinstall via the cu130 index / `update_deps.sh` (never mix PyPI CPU torch with CUDA).
 - **Python ≥ 3.13** — CUDA wheels often lag; recreate the venv on 3.12.
-- **PaddlePaddle Python packages** — uninstall `paddleocr` / `paddlepaddle*`; they conflict with PyTorch. PaddleOCR GPU is RapidOCR + onnxruntime-gpu.
-- **`opencv-python` (GUI)** — RapidOCR lists it as dependency; keep **only** `opencv-python-headless`. `uv pip install rapidocr --no-deps` if pip tries to pull the GUI package.
+- **PaddlePaddle / RapidOCR** — uninstall `paddlepaddle`, `paddlepaddle-gpu` and `rapidocr`. Do **not** mix them with PyTorch. Official `paddleocr` + `paddlex` is required for PaddleOCR GPU.
+- **OpenCV** — keep **one** `cv2`: with PaddleOCR GPU that is `opencv-contrib-python==4.10.0.84` (not `opencv-python-headless` in parallel).
 - **Sandbox / restricted env** — `torch.cuda` may fail inside Cursor sandbox while `nvidia-smi` works on the host; test outside the sandbox.
 
-## PaddleOCR GPU (RapidOCR + onnxruntime-gpu)
+## PaddleOCR CPU (Kreuzberg)
 
-O Kreuzberg 4.10.2 **empacota um ONNX Runtime só-CPU** (`ort-bundled`) e **ignora** `ORT_DYLIB_PATH`. Pedir `AccelerationConfig(provider="cuda")` no backend nativo sempre falha nesta versão.
+O modo **PaddleOCR CPU - 300 DPI** usa o backend nativo `paddleocr` do Kreuzberg com `AccelerationConfig(provider="cpu")`. Sem pacote extra.
 
-O modo **PaddleOCR GPU - 300 DPI** usa **RapidOCR** (modelos PP-OCR ONNX, reconhecedor latin PP-OCRv5) com **`onnxruntime-gpu` CUDA 13**, as mesmas libs CUDA do PyTorch `cu130`. Não instale `paddlepaddle-gpu`.
+## PaddleOCR GPU (Kreuzberg nativo + onnxruntime-gpu)
+
+Conforme [GPU acceleration](https://docs.kreuzberg.dev/getting-started/installation/#gpu-acceleration) e [PaddleOCR](https://docs.kreuzberg.dev/guides/ocr/#using-paddleocr):
+
+1. PaddleOCR nativo está no Kreuzberg desde 4.8.5 — modelos baixam na primeira uso.
+2. Instalar GPU ORT: `uv pip install onnxruntime-gpu>=1.27`
+3. `ORT_DYLIB_PATH` aponta para a biblioteca GPU **antes** de `import kreuzberg` (Windows: `...\onnxruntime\capi\onnxruntime.dll`).
+4. `ExtractionConfig(acceleration=AccelerationConfig(provider="cuda", device_id=0))` — `device_id` é o índice CUDA da RTX 5060 Ti (0 nesta máquina; override via `CUDA_DEVICE_ID`).
+5. O mesmo perfil GPU está em `kreuzberg.toml` (`[acceleration]` + `[ocr.paddle_ocr_config]`). A UI aplica isso em código por modo; a CLI pode usar `--config kreuzberg.toml`.
+
+Este app faz isso em `utils/ort_runtime.py` (`prepare_paddle_gpu_runtime` no `main.py`) e em `_build_extraction_config`.
+
+`LayoutDetectionConfig` e `EmbeddingConfig` aceitam `acceleration`, mas **não são usados** neste pipeline (sem layout detection nem embeddings).
 
 ```bash
-uv pip install "onnxruntime-gpu>=1.27" rapidocr
-# Use opencv-python-headless (já no projeto). Não instale opencv-python.
-```
-
-Verificação:
-
-```bash
+uv pip install "onnxruntime-gpu>=1.27"
 python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 # Deve incluir CUDAExecutionProvider
 ```
 
-O bootstrap (`utils/ort_runtime.py`) coloca `torch/lib` no `PATH` e faz preload das DLLs CUDA antes das sessões ORT.
+O Kreuzberg **4.10.2** é compilado com `ort-bundled`: log `ONNX Runtime is bundled; skipping system library discovery`. Pedir CUDA então falha com *CUDA execution provider requested but not available*. O app tenta o nativo primeiro; se recusar CUDA, usa PaddleOCR oficial + `onnxruntime-gpu` (GPU de verdade, não CPU). Não instale `paddlepaddle-gpu` nem `rapidocr`.
 
-Não misture isso com `paddlepaddle-gpu`.
+Na RTX 5060 Ti (16 GB) o modo GPU usa `model_tier=server`, `padding=16`, lote de 8 páginas e `rec_batch_num=16`.
 
 ## VLM fallback (formulários / tabelas)
 
@@ -136,7 +142,3 @@ export VLM_MODEL=nvidia/nemotron-parse
 
 Desligado por padrão. Use só para testes rápidos — processos judiciais não devem
 sair da máquina.
-
-## Older GPUs
-
-Historical Maxwell notes (GTX 860M / cu124): [`CUDA_SETUP_GTX860M.md`](CUDA_SETUP_GTX860M.md). Prefer this file + `DEPENDENCY_CONFLICTS.md` for current machines.

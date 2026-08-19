@@ -55,7 +55,7 @@ Powered by Kreuzberg - https://kreuzberg.dev/
 ⚡ Performance: 3-5x faster with Rust core
 📦 Formats: 50+ file formats supported
 
-GPU detectada: NVIDIA GeForce RTX 3080 (10GB VRAM)
+GPU detectada: NVIDIA GeForce RTX 5060 Ti (16GB VRAM)
 [ou]
 GPU não detectada - Modo GPU indisponível
 

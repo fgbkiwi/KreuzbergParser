@@ -181,8 +181,8 @@ brew install tesseract tesseract-lang
 # Verificar CUDA disponível
 python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
-# Se CUDA não disponível, instalar PyTorch com CUDA (escolha o cuXXX correto):
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# Se CUDA não disponível, instalar PyTorch com CUDA (RTX 50: cu130):
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 ```
 
 ---
@@ -203,8 +203,6 @@ O modo GPU usa **EasyOCR + TrOCR** via PyTorch no `.venv`. Você precisa de:
 No Cursor, o interpretador do `main.py` deve ser **`.venv/bin/python`**, não `.venv-nemotron` nem `/bin/python3`.
 
 **Nemotron Parse (opcional):** venv isolado + `nvcc` 13.0 — `./scripts/install_cuda_toolkit.sh` e `./scripts/start_nemotron_parse.sh`.
-
-Notas históricas GTX 860M / cu124: [`CUDA_SETUP_GTX860M.md`](CUDA_SETUP_GTX860M.md).
 
 ---
 
@@ -272,8 +270,8 @@ instalação** para reproducibilidade, não bloqueios rígidos.
   ```
 - Para regenerar o lockfile completo (incluindo pins Linux), use `./scripts/update_deps.sh` em
   Linux ou WSL.
-- Escolha o índice CUDA (`cu124`, `cu130`, …) conforme sua GPU; GPUs mais novas (Blackwell /
-  RTX 50) exigem índices recentes como `cu130`.
+- Nesta máquina (RTX 5060 Ti / Blackwell) use o índice **`cu130`**. Tags mais antigas
+  não incluem `sm_120`.
 
 ---
 
@@ -427,7 +425,7 @@ pip install kreuzberg
 **Verificações:**
 1. GPU NVIDIA presente: `nvidia-smi`
 2. PyTorch CUDA no **`.venv`**: `.venv/bin/python -c "import torch; print(torch.cuda.is_available())"`
-3. Wheel `+cu130` (não cu118/cu124 nesta máquina RTX 50): `./scripts/update_deps.sh --sync --cuda cu130`
+3. Wheel `+cu130` (Blackwell / RTX 5060 Ti): `./scripts/update_deps.sh --sync --cuda cu130`
 
 `nvcc` **não** é exigido pelo OCR. Só o servidor Nemotron Parse precisa do CUDA Toolkit 13.0.
 

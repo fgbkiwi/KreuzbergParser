@@ -169,10 +169,13 @@ venv_python = Path(sys.argv[3]) if len(sys.argv) > 3 else None
 req_re = re.compile(
     r"^(?P<name>[A-Za-z0-9_.-]+)\s*(?P<op>[<>=!~]=?|@)\s*(?P<ver>.+)$"
 )
-paddle_names = {
-    "paddleocr",
+paddle_forbidden = {
     "paddlepaddle",
     "paddlepaddle-gpu",
+    "rapidocr",
+}
+paddle_ocr_names = {
+    "paddleocr",
     "paddlex",
 }
 torch_names = {"torch", "torchvision", "torchaudio"}
@@ -273,24 +276,49 @@ if cuda_tag != "cpu":
                     f"{label} {name}={ver} CUDA tag differs from expected +{cuda_tag}",
                 )
 
-# Paddle stack must not coexist with PyTorch GPU OCR.
-for name in sorted(paddle_names):
+# paddlepaddle / RapidOCR must not coexist with the PyTorch OCR stack.
+# Official paddleocr + paddlex (ONNX Runtime GPU) is the PaddleOCR GPU path.
+for name in sorted(paddle_forbidden):
     if name in pinned:
-        emit("FAIL", f"requirements pin {name} — do not mix Paddle with PyTorch OCR stack")
+        emit(
+            "FAIL",
+            f"requirements pin {name} — do not install paddlepaddle/rapidocr; "
+            "PaddleOCR GPU uses paddleocr + onnxruntime-gpu",
+        )
     if name in installed:
-        emit("FAIL", f"installed package {name} — uninstall; conflicts with PyTorch OCR stack")
+        emit(
+            "FAIL",
+            f"installed package {name} — uninstall; use paddleocr + onnxruntime-gpu",
+        )
 
-# OpenCV: headless only.
-has_gui = "opencv-python" in pinned or "opencv-python" in installed
-has_headless = (
-    "opencv-python-headless" in pinned or "opencv-python-headless" in installed
+# OpenCV: exactly one cv2 provider. PaddleOCR needs opencv-contrib-python.
+opencv_names = (
+    "opencv-python",
+    "opencv-python-headless",
+    "opencv-contrib-python",
+    "opencv-contrib-python-headless",
 )
-if has_gui and has_headless:
+opencv_present = sorted(
+    {
+        name
+        for name in opencv_names
+        if name in pinned or name in installed
+    }
+)
+if len(opencv_present) > 1:
     emit(
         "FAIL",
-        "both opencv-python and opencv-python-headless present — keep headless only",
+        "multiple OpenCV packages provide cv2 "
+        f"({', '.join(opencv_present)}) — keep only one",
     )
-elif has_gui and not has_headless:
+uses_paddleocr = any(name in pinned or name in installed for name in paddle_ocr_names)
+if uses_paddleocr and "opencv-contrib-python" not in opencv_present:
+    emit(
+        "WARN",
+        "paddleocr/paddlex present without opencv-contrib-python "
+        "(ocr-core extra expects opencv-contrib-python==4.10.0.84)",
+    )
+elif not uses_paddleocr and "opencv-python" in opencv_present:
     emit("WARN", "opencv-python (GUI) present — prefer opencv-python-headless")
 
 check_python_version(venv_python) if venv_python else None

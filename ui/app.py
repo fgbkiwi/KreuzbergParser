@@ -10,6 +10,7 @@ import threading
 
 from config import Config, ProcessingMode, is_gpu_mode
 from utils.gpu_detector import gpu_detector
+from utils.logger import log_visible_alert
 from core.kreuzberg_engine import KreuzbergOCREngine
 from core.markdown_converter import MarkdownConverter
 
@@ -396,7 +397,8 @@ class OCRApp:
         if self.gpu_info["available"]:
             return (
                 f"✅ {self.gpu_info['name']} "
-                f"({self.gpu_info['vram_gb']}GB VRAM)"
+                f"(cuda:{self.gpu_info.get('device_id', 0)}, "
+                f"{self.gpu_info['vram_gb']}GB VRAM)"
             )
         return "❌ GPU não detectada - Modo GPU indisponível"
 
@@ -641,6 +643,24 @@ class OCRApp:
             )
             self.update_stats(stats_text)
             self.update_progress(1.0, "✅ Concluido!")
+
+            fallback_alert = result.get("metadata", {}).get(
+                "paddle_gpu_fallback_alert"
+            )
+            if fallback_alert:
+                self.log_message(
+                    "\n" + fallback_alert,
+                    ft.Colors.ORANGE_900,
+                )
+                self.log_message(
+                    "Traceback completo do probe nativo está no log de auditoria "
+                    f"({audit_log or 'logs/'}).",
+                    ft.Colors.ORANGE_900,
+                )
+                log_visible_alert(
+                    logger,
+                    ["[fim da sessão]"] + str(fallback_alert).splitlines(),
+                )
 
         except Exception as e:
             logger.exception("Error processing PDF")
