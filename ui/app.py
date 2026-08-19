@@ -563,6 +563,7 @@ class OCRApp:
             self.log_message("❌ PDF ou pasta de destino inválidos", ft.Colors.RED)
             return
 
+        engine = None
         try:
             start_time = time.time()
             enable_hw = bool(self.enable_handwriting_check.value)
@@ -585,6 +586,12 @@ class OCRApp:
             )
 
             engine = KreuzbergOCREngine(self.selected_mode, self.config)
+            if engine._paddle_gpu_fallback_text():
+                self.log_message(
+                    "⚠️ Kreuzberg nativo recusou CUDA — OCR via PaddleOCR "
+                    "oficial na GPU (não é CPU). Detalhes no final do log.",
+                    ft.Colors.ORANGE_900,
+                )
             images_dir = Path(output_folder) / f"{Path(pdf_path).stem}_images"
 
             def on_page_progress(current: int, total: int, page_data: dict):
@@ -644,33 +651,39 @@ class OCRApp:
             self.update_stats(stats_text)
             self.update_progress(1.0, "✅ Concluido!")
 
-            fallback_alert = result.get("metadata", {}).get(
-                "paddle_gpu_fallback_alert"
+            self._emit_paddle_gpu_fallback_alert(
+                result.get("metadata", {}).get("paddle_gpu_fallback_alert"),
+                audit_log=audit_log,
             )
-            if fallback_alert:
-                self.log_message(
-                    "\n" + fallback_alert,
-                    ft.Colors.ORANGE_900,
-                )
-                self.log_message(
-                    "Traceback completo do probe nativo está no log de auditoria "
-                    f"({audit_log or 'logs/'}).",
-                    ft.Colors.ORANGE_900,
-                )
-                log_visible_alert(
-                    logger,
-                    ["[fim da sessão]"] + str(fallback_alert).splitlines(),
-                )
 
         except Exception as e:
             logger.exception("Error processing PDF")
             self.log_message(f"❌ Erro: {str(e)}", ft.Colors.RED)
             self.update_progress(0, "❌ Erro no processamento")
+            if engine is not None:
+                self._emit_paddle_gpu_fallback_alert(
+                    engine._paddle_gpu_fallback_text()
+                )
 
         finally:
             self.is_processing = False
             self.process_button.disabled = False
             self.page.update()
+
+    def _emit_paddle_gpu_fallback_alert(self, alert, *, audit_log=None) -> None:
+        if not alert:
+            return
+        border = "!" * 78
+        self.log_message(f"\n{border}\n{alert}\n{border}", ft.Colors.ORANGE_900)
+        if audit_log:
+            self.log_message(
+                f"Traceback completo do probe nativo: {audit_log}",
+                ft.Colors.ORANGE_900,
+            )
+        log_visible_alert(
+            logger,
+            ["[fim da sessão]"] + str(alert).splitlines(),
+        )
 
     def log_message(self, message: str, color=None):
         current = self.log_field.value or ""

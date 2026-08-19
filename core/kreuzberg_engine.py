@@ -303,10 +303,6 @@ class KreuzbergOCREngine:
 
             total_time = time.time() - start_time
             stats = self._calculate_statistics(pages_data, total_time)
-            self._log_paddle_gpu_fallback_alert(
-                etapa="fim do processamento",
-                include_traceback=True,
-            )
 
             return {
                 "pages": pages_data,
@@ -341,6 +337,11 @@ class KreuzbergOCREngine:
         except Exception:
             logger.exception("Error processing PDF: %s", pdf_path.name)
             raise
+        finally:
+            self._log_paddle_gpu_fallback_alert(
+                etapa="fim do processamento",
+                include_traceback=True,
+            )
 
     # ------------------------------------------------------------------
     # Per-page processing
