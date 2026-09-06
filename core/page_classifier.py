@@ -209,7 +209,66 @@ class PageClassification:
 # PJe / Unico boilerplate stripping
 # ---------------------------------------------------------------------------
 
-_FLS_RE = re.compile(r"(?mi)^\s*Fls\.?\s*:\s*(\d+)\s*$")
+# One or more folio numbers: "Fls.: 107", "Fls.: 2 107", "Fls.: 10Fls.: 115"
+_FLS_RE = re.compile(r"(?mi)^\s*Fls\.?\s*:\s*(\d+)(?:\s+(\d+))?\s*$")
+_FLS_ANY_RE = re.compile(r"(?i)F[il1]s\.?\s*:\s*(\d+)")
+
+
+def expand_stacked_fls(numbers: Sequence[int]) -> List[int]:
+    """
+    Split PJe dual overlays concatenated by pdftotext (2 + 107 → 2107).
+
+    Document folio is 1–2 digits; process folio is the remainder (3+ digits).
+    """
+    expanded: List[int] = []
+    for raw in numbers:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0:
+            continue
+        text = str(value)
+        split = False
+        if 4 <= len(text) <= 6:
+            for left_len in (1, 2):
+                if len(text) - left_len < 3:
+                    continue
+                left = int(text[:left_len])
+                right = int(text[left_len:])
+                if 1 <= left <= 40 and 50 <= right <= 9999 and right > left:
+                    expanded.extend([left, right])
+                    split = True
+                    break
+        if not split:
+            expanded.append(value)
+    return expanded
+
+
+def collect_fls_numbers(text: str) -> List[int]:
+    """All Fls. numbers on a page, including stacked dual overlays."""
+    sanitized = (text or "").replace("\u00a0", " ")
+    found: List[int] = []
+    for match in _FLS_ANY_RE.finditer(sanitized):
+        try:
+            found.append(int(match.group(1)))
+        except ValueError:
+            continue
+    for match in _FLS_RE.finditer(sanitized):
+        if match.group(2):
+            try:
+                found.append(int(match.group(2)))
+            except ValueError:
+                pass
+    return expand_stacked_fls(found)
+
+
+def prefer_process_folio(numbers: Sequence[int]) -> Optional[int]:
+    """Prefer the process folio when a document folio is also present."""
+    values = [int(n) for n in numbers if n]
+    if not values:
+        return None
+    return max(values)
 _SIGNATURE_RE = re.compile(
     r"(?mi)^\s*Documento assinado eletronicamente por .+?(?:\n|$)",
 )
@@ -297,12 +356,7 @@ def extract_pje_stamp(text: str) -> PJeStampMeta:
     sanitized = (text or "").replace("\u00a0", " ")
     stamp = PJeStampMeta()
 
-    fls_match = _FLS_RE.search(sanitized)
-    if fls_match:
-        try:
-            stamp.fls = int(fls_match.group(1))
-        except ValueError:
-            stamp.fls = None
+    stamp.fls = prefer_process_folio(collect_fls_numbers(sanitized))
 
     sig_match = _SIGNATURE_RE.search(sanitized)
     if sig_match:
@@ -353,6 +407,7 @@ def strip_pje_boilerplate(text: str) -> Tuple[str, PJeStampMeta]:
     sanitized = (text or "").replace("\u00a0", " ")
 
     cleaned = _FLS_RE.sub("", sanitized)
+    cleaned = _FLS_ANY_RE.sub("", cleaned)
     cleaned = _SIGNATURE_RE.sub("", cleaned)
     cleaned = _DIGITALLY_SIGNED_RE.sub("", cleaned)
     cleaned = _UNICO_SIGN_RE.sub("", cleaned)
@@ -574,6 +629,10 @@ def _infer_subtype(
 
     if any(img.is_full_page_scan() for img in content_images):
         return "a4_scan"
+
+    if not content_images:
+        # Overlay-only text + logos, or text converted to vector outlines.
+        return "vector_outline"
 
     if content_images or images:
         return "image_page"
