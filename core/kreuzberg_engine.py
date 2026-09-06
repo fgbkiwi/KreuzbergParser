@@ -29,8 +29,10 @@ from core.labor_forms import format_labor_document, refine_kind
 from core.letterhead import apply_letterhead_strip
 from core.page_classifier import (
     classify_pdf_pages,
+    collect_fls_numbers,
     extract_cnj_process_number,
     extract_page_images_to_dir,
+    prefer_process_folio,
 )
 from core.page_layout import (
     LayoutRect,
@@ -52,6 +54,12 @@ from utils.tessdata import ensure_tessdata
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int, Dict], None]
+
+# The native CUDA probe costs a full PaddleOCR model load (~25s), so its verdict
+# is reused for the lifetime of the process — as is the (long) explanation of the
+# fallback it triggers, which only needs to be spelled out once per session.
+_NATIVE_PADDLE_CUDA_PROBE: Optional[Tuple[bool, Optional[BaseException], object]] = None
+_NATIVE_PADDLE_CUDA_ALERT_LOGGED = False
 
 # Document kinds that benefit from high DPI + Tesseract tables
 FORM_KINDS = {
@@ -164,6 +172,10 @@ class KreuzbergOCREngine:
             self.vlm_base_url = vlm_base_url
         if vlm_model:
             self.vlm_model = vlm_model
+
+        # Before run_file_suffix, so the log/output names match what really ran.
+        if self.enable_vlm_fallback:
+            self._check_vlm_endpoint()
 
         run_suffix = self.config.run_file_suffix(
             self.mode,
@@ -434,6 +446,8 @@ class KreuzbergOCREngine:
                 )
                 page_data["device"] = self._ocr_device()
                 page_data["library"] = self._ocr_library()
+                page_data["fls"] = classification.stamp.fls
+                page_data["marker_page_number"] = classification.stamp.fls
                 device = page_data["device"]
                 library = page_data["library"]
         except Exception as exc:
@@ -646,6 +660,13 @@ class KreuzbergOCREngine:
 
         # Resolve kind: sumario first, then OCR keywords
         kind = refine_kind(kind, body) or detect_doc_kind_from_text(body)
+        ocr_folio = prefer_process_folio(
+            collect_fls_numbers(ocr_text) + collect_fls_numbers(body)
+        )
+        if ocr_folio and (
+            classification.stamp.fls is None or ocr_folio >= classification.stamp.fls
+        ):
+            classification.stamp.fls = ocr_folio
         if kind in FORM_KINDS and not table_mds and self.mode_config.get("backend") != "tesseract":
             # Second pass with Tesseract for table layout
             try:
@@ -881,6 +902,9 @@ class KreuzbergOCREngine:
                 paddle_kwargs["rec_batch_num"] = rec_batch
             det_limit = self.mode_config.get("det_limit_side_len")
             if det_limit:
+                # PaddleOcrConfig has no det_limit_type, so this path inherits
+                # PaddleOCR's limit_type='min' and cannot downscale a 300 DPI
+                # raster. See core/paddle_gpu_ocr.py for why that costs ~15x.
                 paddle_kwargs["det_limit_side_len"] = int(det_limit)
             try:
                 paddle_cfg = kreuzberg.PaddleOcrConfig(**paddle_kwargs)
@@ -994,17 +1018,10 @@ class KreuzbergOCREngine:
         self._paddle_gpu_fallback_lines = self._build_paddle_native_cuda_refusal(
             probe_exc, probe_cfg
         )
-        logger.error(
-            "Kreuzberg nativo recusou CUDA no PaddleOCR: %s: %s",
-            type(probe_exc).__name__ if probe_exc else "Unknown",
-            probe_exc,
-            exc_info=probe_exc,
+        logger.debug(
+            "Traceback do probe nativo do Kreuzberg", exc_info=probe_exc
         )
         self._log_paddle_gpu_fallback_alert(etapa="inicialização do engine")
-        logger.warning(
-            "Ativando fallback GPU: PaddleOCR oficial + onnxruntime-gpu "
-            "(este modo NÃO cai para CPU)."
-        )
         from core.paddle_gpu_ocr import OfficialPaddleGpuOcr
 
         language = self.config.BACKEND_LANGUAGE_MAP.get("paddleocr", {}).get(
@@ -1012,18 +1029,32 @@ class KreuzbergOCREngine:
             "pt",
         )
         rec_batch = self._adaptive_rec_batch_num() or 16
-        det_limit = int(self.mode_config.get("det_limit_side_len") or 1920)
+        det_limit = int(self.mode_config.get("det_limit_side_len") or 1600)
         self._paddle_gpu = OfficialPaddleGpuOcr(
             language=language,
             rec_batch_size=rec_batch,
             device_id=self._cuda_device_id(),
             det_limit_side_len=det_limit,
+            det_limit_type=str(self.mode_config.get("det_limit_type") or "max"),
+            cudnn_conv_algo_search=str(
+                self.mode_config.get("cudnn_conv_algo_search") or "HEURISTIC"
+            ),
         )
 
     def _probe_kreuzberg_paddle_cuda(
         self,
     ) -> tuple[bool, Optional[BaseException], Optional[object]]:
         """True when Kreuzberg's bundled PaddleOCR accepts AccelerationConfig cuda."""
+        global _NATIVE_PADDLE_CUDA_PROBE
+        if _NATIVE_PADDLE_CUDA_PROBE is not None:
+            return _NATIVE_PADDLE_CUDA_PROBE
+        result = self._run_kreuzberg_paddle_cuda_probe()
+        _NATIVE_PADDLE_CUDA_PROBE = result
+        return result
+
+    def _run_kreuzberg_paddle_cuda_probe(
+        self,
+    ) -> tuple[bool, Optional[BaseException], Optional[object]]:
         cfg = None
         try:
             from io import BytesIO
@@ -1060,9 +1091,9 @@ class KreuzbergOCREngine:
             else "indeterminado — ver traceback"
         )
         lines = [
-            "ALERTA: Kreuzberg nativo recusou CUDA no PaddleOCR",
-            "O OCR desta sessão NÃO usou o backend nativo do Kreuzberg.",
+            "Kreuzberg nativo recusou CUDA no PaddleOCR — usando fallback GPU.",
             "Fallback ativo: PaddleOCR oficial + onnxruntime-gpu (GPU de verdade, NÃO é CPU).",
+            "Esta é uma limitação conhecida do wheel, não um erro do processamento.",
             "",
             f"Exceção: {type(exc).__name__ if exc else 'desconhecida'}: {exc}",
             f"Kreuzberg: {kreuzberg_ver}",
@@ -1079,8 +1110,8 @@ class KreuzbergOCREngine:
             f"ORT empacotado no Kreuzberg (ort-bundled): {bundled_hint}",
             "",
             "O Python onnxruntime-gpu pode listar CUDAExecutionProvider e mesmo assim",
-            "o Kreuzberg recusar CUDA: o wheel 4.10.2 carrega o ORT só-CPU embutido",
-            "no pyd e ignora ORT_DYLIB_PATH (feature Rust ort-bundled).",
+            f"o Kreuzberg recusar CUDA: o wheel {kreuzberg_ver} carrega o ORT só-CPU",
+            "embutido no pyd e ignora ORT_DYLIB_PATH (feature Rust ort-bundled).",
             "",
             "Documentação para pesquisar correção nativa:",
             "  https://docs.kreuzberg.dev/getting-started/installation/#gpu-acceleration",
@@ -1102,8 +1133,23 @@ class KreuzbergOCREngine:
     def _log_paddle_gpu_fallback_alert(
         self, *, etapa: str, include_traceback: bool = False
     ) -> None:
+        """
+        Explain the fallback once per session, then only remind in one line.
+
+        The diagnostic block is long and the condition never changes mid-run, so
+        repeating it per PDF buried the actual processing log.
+        """
+        global _NATIVE_PADDLE_CUDA_ALERT_LOGGED
         if not self._paddle_gpu_fallback_lines:
             return
+        if _NATIVE_PADDLE_CUDA_ALERT_LOGGED:
+            logger.info(
+                "OCR desta sessão: PaddleOCR oficial + onnxruntime-gpu (CUDA). "
+                "O backend nativo do Kreuzberg recusou CUDA — diagnóstico completo "
+                "no início do log da sessão."
+            )
+            return
+
         lines = [f"[{etapa}]"] + list(self._paddle_gpu_fallback_lines)
         if include_traceback and self._paddle_native_cuda_error is not None:
             tb = "".join(
@@ -1115,6 +1161,24 @@ class KreuzbergOCREngine:
             ).rstrip()
             lines.extend(["", "Traceback do probe nativo:", tb])
         log_visible_alert(logger, lines)
+        _NATIVE_PADDLE_CUDA_ALERT_LOGGED = True
+
+    def _check_vlm_endpoint(self) -> None:
+        """
+        Probe the VLM once per run and disable the fallback if it is down.
+
+        Otherwise every page that misses a template pays a failed connection and
+        logs the same outage.
+        """
+        from core.vlm_ocr import reset_vlm_health, vlm_available
+
+        reset_vlm_health()
+        if vlm_available(
+            base_url=self.vlm_base_url or None,
+            model=self.vlm_model or None,
+        ):
+            return
+        self.enable_vlm_fallback = False
 
     def _cuda_device_id(self) -> int:
         try:

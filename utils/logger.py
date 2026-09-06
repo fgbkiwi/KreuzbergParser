@@ -260,13 +260,21 @@ def log_page_end(
     )
 
 
-def log_visible_alert(logger: logging.Logger, lines: Sequence[str]) -> None:
-    """Emit a high-visibility ERROR banner (file + console)."""
+def log_visible_alert(
+    logger: logging.Logger,
+    lines: Sequence[str],
+    *,
+    level: int = logging.WARNING,
+) -> None:
+    """
+    Emit a high-visibility banner as a single record.
+
+    One record per banner keeps the timestamp/level prefix off every line and
+    makes the block easy to spot (and to filter) in the log file.
+    """
     border = "=" * 78
-    logger.error(border)
-    for line in lines:
-        logger.error("%s", line if line else " ")
-    logger.error(border)
+    body = "\n".join(line if line else "" for line in lines)
+    logger.log(level, "\n%s\n%s\n%s", border, body, border)
 
 
 def _sanitize_filename(value: str) -> str:

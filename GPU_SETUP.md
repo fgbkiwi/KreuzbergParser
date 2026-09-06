@@ -76,6 +76,52 @@ O Kreuzberg **4.10.2** é compilado com `ort-bundled`: log `ONNX Runtime is bund
 
 Na RTX 5060 Ti (16 GB) o modo GPU usa `model_tier=server`, `padding=16`, lote de 8 páginas e `rec_batch_num=16`.
 
+### Resolução da detecção (`det_limit_type`) — 15x no tempo por página
+
+O PaddleOCR usa `limit_type='min'` por padrão, que significa "garanta que o **menor**
+lado tenha pelo menos N pixels". Como um A4 renderizado a 300 DPI tem 2480x3509, o
+menor lado já supera qualquer `det_limit_side_len` razoável e **nenhuma redução
+acontece**: o `PP-OCRv5_server_det` roda sobre 8,7 MP, ocupa ~15 GB de VRAM e leva
+14-16s por página.
+
+Por isso o modo GPU fixa `det_limit_type="max"` com `det_limit_side_len=1600`
+(`config.py` → `MODE_CONFIGS[PADDLE_GPU]`, aplicado em `core/paddle_gpu_ocr.py`).
+Medições nas páginas 16-18 de um processo real do PJe:
+
+| Detecção | Tempo médio/página | Caracteres (p16/p17/p18) |
+|---|---|---|
+| `min/1920` (padrão do PaddleOCR) | 13,65s | 1636 / 557 / 1377 |
+| `max/1280` | 0,99s | 1749 / 557 / 1536 |
+| **`max/1600`** (em uso) | **1,01s** | **1752 / 660 / 1584** |
+| `max/1920` | 1,09s | 1640 / 562 / 1552 |
+| `max/2400` | 16,01s | 1638 / 557 / 1552 |
+
+Há um platô de ~1s até 1920 e um penhasco acima disso. Reduzir a detecção **melhora**
+o texto extraído: o detector foi treinado em imagens bem menores, e a 300 DPI os traços
+ficam grandes demais para o campo receptivo dele. Em `max/1600` o OCR captura carimbos
+de assinatura eletrônica que o full-res perdia inteiramente.
+
+Continue renderizando a 300 DPI: só a detecção usa a cópia reduzida — o reconhecimento
+recorta da imagem original em resolução plena.
+
+Duas ressalvas:
+
+- `kreuzberg.PaddleOcrConfig` **não** expõe `det_limit_type`, só `det_limit_side_len`.
+  Se o CUDA nativo do Kreuzberg voltar a funcionar, esse caminho herda o `min` e o
+  problema reaparece (há um comentário em `_build_extraction_config`).
+- `cudnn_conv_algo_search` foi medido junto e quase não importa aqui (só a primeira
+  página, 1,21s contra 0,99s). Fica em `HEURISTIC` por ser mais previsível.
+
+Para reavaliar após trocar de modelo ou de GPU, `scripts/bench_paddle_gpu.py` renderiza
+as páginas uma vez e cronometra cada política sobre a mesma entrada:
+
+```bash
+.venv/bin/python scripts/bench_paddle_gpu.py processo.pdf \
+  --pages 16 17 18 --sweep max/1600 min/1920 --dump-dir temp/bench_ocr
+```
+
+`--dump-dir` grava o texto de cada variante para comparação lado a lado.
+
 ## VLM fallback (formulários / tabelas)
 
 Quando os templates determinísticos não preenchem campos suficientes, o engine pode

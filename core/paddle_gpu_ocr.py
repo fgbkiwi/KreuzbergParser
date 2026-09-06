@@ -5,6 +5,13 @@ Kreuzberg 4.9.4+ applies AccelerationConfig(provider="cuda"), but the 4.10
 wheel still bundles a CPU-only ONNX Runtime and ignores the system
 onnxruntime-gpu. This module runs PaddleOCR 3.x with engine='onnxruntime'
 and CUDAExecutionProvider only — no silent CPU fallback.
+
+Detection resize policy is the dominant cost here. PaddleOCR defaults to
+limit_type='min', which never shrinks a 300 DPI A4 raster (2480x3509), so
+PP-OCRv5_server_det runs on 8.7 MP and takes ~14-16s per page on an RTX 5060
+Ti. limit_type='max' with side_len=1600 keeps detection near the resolution
+the model was trained for: ~1s per page, and it recovers *more* text, since
+recognition still crops from the original full-resolution image.
 """
 from __future__ import annotations
 
@@ -36,7 +43,9 @@ class OfficialPaddleGpuOcr:
         ocr_version: str = "PP-OCRv5",
         rec_batch_size: int = 16,
         device_id: int = 0,
-        det_limit_side_len: int = 1920,
+        det_limit_side_len: int = 1600,
+        det_limit_type: str = "max",
+        cudnn_conv_algo_search: str = "HEURISTIC",
     ) -> None:
         if not prepare_paddle_gpu_runtime():
             raise PaddleOcrGpuError(
@@ -52,9 +61,14 @@ class OfficialPaddleGpuOcr:
                 "Rode: pip install 'paddleocr>=3.7,<3.8'. Este modo não cai para CPU."
             ) from exc
 
+        _route_paddlex_logging()
+
+        provider_options: dict[str, Any] = {"device_id": int(device_id)}
+        if cudnn_conv_algo_search:
+            provider_options["cudnn_conv_algo_search"] = cudnn_conv_algo_search
         engine_config = {
             "providers": [_CUDA_PROVIDER],
-            "provider_options": [{"device_id": int(device_id)}],
+            "provider_options": [provider_options],
         }
         try:
             self._ocr = PaddleOCR(
@@ -68,6 +82,7 @@ class OfficialPaddleGpuOcr:
                 use_textline_orientation=False,
                 text_recognition_batch_size=int(rec_batch_size),
                 text_det_limit_side_len=int(det_limit_side_len),
+                text_det_limit_type=str(det_limit_type),
             )
         except Exception as exc:
             raise PaddleOcrGpuError(
@@ -76,15 +91,18 @@ class OfficialPaddleGpuOcr:
                 "Este modo não cai para CPU."
             ) from exc
 
-        providers = self._require_cuda_sessions()
+        n_sessions, providers = self._require_cuda_sessions()
         logger.info(
             "PaddleOCR oficial na GPU: lang=%s version=%s device=gpu:%s "
-            "rec_batch=%s det_limit=%s providers=%s",
+            "rec_batch=%s det_limit=%s/%s cudnn_algo=%s sessões_cuda=%s providers=%s",
             language,
             ocr_version,
             device_id,
             rec_batch_size,
+            det_limit_type,
             det_limit_side_len,
+            cudnn_conv_algo_search or "default",
+            n_sessions,
             providers,
         )
         self._lock = threading.Lock()
@@ -102,7 +120,7 @@ class OfficialPaddleGpuOcr:
         body = "\n".join(t.strip() for t in texts if t and str(t).strip()).strip()
         return body, False, None, []
 
-    def _require_cuda_sessions(self) -> List[str]:
+    def _require_cuda_sessions(self) -> Tuple[int, List[str]]:
         sessions = list(_iter_ort_sessions(self._ocr))
         if not sessions:
             raise PaddleOcrGpuError(
@@ -117,8 +135,24 @@ class OfficialPaddleGpuOcr:
                     "PaddleOCR GPU falhou: a sessão ONNX Runtime não está em CUDA "
                     f"(providers={providers}). Este modo não cai para CPU."
                 )
-            used.append(",".join(providers))
-        return used
+            for name in providers:
+                if name not in used:
+                    used.append(name)
+        return len(sessions), used
+
+
+def _route_paddlex_logging() -> None:
+    """
+    Send PaddleX chatter through our logging instead of its own stderr handler.
+
+    PaddleX installs a colorlog handler with propagate=False and logs model
+    creation / cache hits at INFO, which duplicates lines we already emit.
+    """
+    paddlex_logger = logging.getLogger("paddlex")
+    for handler in list(paddlex_logger.handlers):
+        paddlex_logger.removeHandler(handler)
+    paddlex_logger.propagate = True
+    paddlex_logger.setLevel(logging.WARNING)
 
 
 def _decode_png_bgr(png_bytes: bytes) -> np.ndarray:

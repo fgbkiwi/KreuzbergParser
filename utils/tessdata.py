@@ -22,6 +22,9 @@ _TESSDATA_BASE_URL = (
 )
 _DEFAULT_LANGS = ("por", "eng")
 
+# The OCR pipeline calls this per page; keep it quiet once the dir is settled.
+_configured: set[tuple[str, tuple[str, ...]]] = set()
+
 
 def ensure_tessdata(
     tessdata_dir: Path | str,
@@ -33,9 +36,14 @@ def ensure_tessdata(
     Returns the tessdata directory path.
     """
     target_dir = Path(tessdata_dir).expanduser().resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
-
     langs = tuple(languages or _DEFAULT_LANGS)
+    cache_key = (str(target_dir), langs)
+
+    if cache_key in _configured and os.environ.get("TESSDATA_PREFIX") == str(target_dir):
+        logger.debug("TESSDATA_PREFIX já configurado: %s", target_dir)
+        return target_dir
+
+    target_dir.mkdir(parents=True, exist_ok=True)
     missing = [lang for lang in langs if not _traineddata_path(target_dir, lang).exists()]
 
     if missing:
@@ -45,7 +53,8 @@ def ensure_tessdata(
         logger.debug("Dados Tesseract já presentes em %s", target_dir)
 
     os.environ["TESSDATA_PREFIX"] = str(target_dir)
-    logger.info("TESSDATA_PREFIX=%s", target_dir)
+    _configured.add(cache_key)
+    logger.info("TESSDATA_PREFIX=%s (idiomas: %s)", target_dir, ", ".join(langs))
     return target_dir
 
 

@@ -40,6 +40,7 @@ KreuzbergParser/
 │   ├── update_deps.sh
 │   ├── check_updates.py
 │   ├── compare_extraction.py
+│   ├── bench_paddle_gpu.py      # Tempo/qualidade por det_limit_type (ver GPU_SETUP.md)
 │   ├── setup_nemotron_venv.sh
 │   ├── start_nemotron_parse.sh
 │   └── install_cuda_toolkit.sh
