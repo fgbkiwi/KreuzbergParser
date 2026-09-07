@@ -450,6 +450,79 @@ def residual_is_overlay_only(residual_text: str, min_chars: int = 200) -> bool:
     return len(joined) < min_chars
 
 
+# Real words (4+ letters). Used to reject encoding soup / vector-outline garbage.
+_RESIDUAL_WORD_RE = re.compile(r"[A-Za-zÀ-ÿÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç]{4,}")
+
+# Common PT / labor-law tokens that strongly signal a usable text layer.
+_RESIDUAL_PT_HINTS = (
+    "parágrafo",
+    "paragrafo",
+    "cláusula",
+    "clausula",
+    "empregado",
+    "empresa",
+    "trabalho",
+    "convenção",
+    "convencao",
+    "contrato",
+    "artigo",
+    "salário",
+    "salario",
+    "hora",
+    "sindicato",
+    "fgts",
+    "clt",
+    "rescisão",
+    "rescisao",
+    "petição",
+    "peticao",
+    "contestação",
+    "contestacao",
+    "réplica",
+    "replica",
+    "intimação",
+    "intimacao",
+    "despacho",
+    "audiência",
+    "audiencia",
+    "testemunha",
+    "número",
+    "numero",
+    "registro",
+)
+
+
+def residual_text_is_usable(residual_text: str, min_chars: int = 200) -> bool:
+    """
+    True when pdftotext residual looks like real document text.
+
+    Rejects short overlay-only leftovers and long garbage layers (broken
+    encodings / vector outlines that yield symbol soup with few real words).
+    """
+    text = (residual_text or "").strip()
+    if residual_is_overlay_only(text, min_chars):
+        return False
+
+    words = _RESIDUAL_WORD_RE.findall(text)
+    if len(words) < 20:
+        return False
+
+    letters = sum(1 for c in text if c.isalpha())
+    nonspace = sum(1 for c in text if not c.isspace())
+    if nonspace == 0 or (letters / nonspace) < 0.45:
+        return False
+
+    # Control chars (other than whitespace) indicate a broken text layer.
+    controls = sum(1 for c in text if ord(c) < 32 and c not in "\n\r\t")
+    if controls > 20:
+        return False
+
+    low = text.lower()
+    if any(hint in low for hint in _RESIDUAL_PT_HINTS):
+        return True
+    return len(words) >= 40
+
+
 # ---------------------------------------------------------------------------
 # pdfimages -list
 # ---------------------------------------------------------------------------
@@ -665,26 +738,35 @@ def classify_page(
     has_content_figures = bool(content_images)
     max_coverage = max((img.coverage for img in content_images), default=0.0)
 
-    # Forced image forms from SUMÁRIO (TRCT, CD/SD, ficha, etc.)
-    if force_image_ocr:
+    # SUMÁRIO may flag forms that are often scanned (TRCT, CCT, etc.). Only force
+    # full-page OCR when the residual text layer is missing or unusable — a good
+    # native layer (common on later CCT pages) must stay native/hybrid.
+    usable_residual = residual_text_is_usable(
+        residual_text, min_chars=residual_native_chars
+    )
+    _ = residual_hybrid_chars  # kept for API compat; usability uses native floor
+
+    if force_image_ocr and not usable_residual:
         page_class = "image_page"
     elif overlay_only and (has_full_page or has_content_figures):
         page_class = "image_page"
     elif overlay_only and not has_content_figures:
         # No text, no figures — still try raster OCR (blank-ish or vector form)
         page_class = "image_page"
-    elif not overlay_only and has_content_figures and not has_full_page:
+    elif usable_residual and has_content_figures and not has_full_page:
         # Real native text + content figures (petition with frames)
         page_class = "hybrid"
-    elif not overlay_only and has_content_figures and has_full_page and is_petition_like:
+    elif usable_residual and has_content_figures and has_full_page and is_petition_like:
         # Petition-like with a large embedded figure: hybrid to avoid wiping text
         page_class = "hybrid"
-    elif not overlay_only and residual_chars >= residual_native_chars and not has_content_figures:
+    elif usable_residual and not has_content_figures:
         page_class = "native"
-    elif not overlay_only and residual_chars >= residual_hybrid_chars and has_content_figures:
+    elif usable_residual and has_content_figures:
         page_class = "hybrid"
     elif residual_chars >= residual_native_chars and not has_full_page:
-        page_class = "native"
+        # Long residual that failed usability (encoding soup) without a full-page
+        # scan: OCR only when there are content figures; else keep native.
+        page_class = "image_page" if has_content_figures else "native"
     else:
         page_class = "image_page" if (has_content_figures or overlay_only) else "native"
 

@@ -41,7 +41,8 @@ FORCE_IMAGE_OCR_TIPOS = (
     "documento de identificação",
     "carteira de trabalho e previdência social",
     "ctps",
-    # Scanned / vector-outline instruments (PJe overlay only in the text layer)
+    # CCT/ACT: often vector-outline or scanned with a broken text layer. The
+    # classifier still skips OCR when residual Portuguese text is usable.
     "convenção coletiva",
     "convencao coletiva",
     "trabalho (cct)",
