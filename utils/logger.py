@@ -81,12 +81,15 @@ def attach_process_log_file(
     *,
     timestamp: Optional[str] = None,
     suffix: Optional[str] = None,
+    retarget_session: bool = True,
 ) -> Path:
     """
     Attach a dedicated file handler:
     logs/{process_id}_{suffix}_{YYYYMMDD_HHMMSS}.log
 
     Replaces any previous process-specific handler. Returns the log path.
+    When retarget_session is False (batch jobs after the first), the session
+    log is left unchanged so it is not renamed on every PDF.
     """
     global _PROCESS_FILE_HANDLER, _PROCESS_LOG_PATH
 
@@ -99,7 +102,8 @@ def attach_process_log_file(
     ts = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     extra = f"_{suffix}" if suffix else ""
     log_path = config.LOG_DIR / f"{safe_id}{extra}_{ts}.log"
-    retarget_session_log(process_id, suffix=suffix)
+    if retarget_session:
+        retarget_session_log(process_id, suffix=suffix)
 
     root = logging.getLogger()
     if _PROCESS_FILE_HANDLER is not None:

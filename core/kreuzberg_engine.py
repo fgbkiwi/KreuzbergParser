@@ -14,14 +14,18 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
-    import kreuzberg
+    import kreuzberg as _kreuzberg_mod
     KREUZBERG_AVAILABLE = True
 except ImportError:
+    _kreuzberg_mod = None
     KREUZBERG_AVAILABLE = False
     logging.warning("Kreuzberg not installed. Install with: pip install kreuzberg")
+
+# Any: ImportError leaves the module unbound; callers check KREUZBERG_AVAILABLE.
+kreuzberg: Any = _kreuzberg_mod
 
 from config import Config, ProcessingMode, is_gpu_mode
 from core.form_templates import TEMPLATE_KINDS, try_structured_extraction
@@ -77,8 +81,8 @@ FORM_KINDS = {
 class KreuzbergOCREngine:
     """Page-aware OCR engine using Kreuzberg + Poppler classification."""
 
-    def __init__(self, mode: ProcessingMode, config: Config = None):
-        if not KREUZBERG_AVAILABLE:
+    def __init__(self, mode: ProcessingMode, config: Optional[Config] = None):
+        if not KREUZBERG_AVAILABLE or kreuzberg is None:
             raise ImportError(
                 "Kreuzberg library not installed. Run: pip install kreuzberg"
             )
@@ -138,7 +142,7 @@ class KreuzbergOCREngine:
 
     def process_pdf(
         self,
-        pdf_path: str,
+        pdf_path: str | Path,
         *,
         progress_callback: Optional[ProgressCallback] = None,
         enable_handwriting: bool = False,
@@ -148,6 +152,7 @@ class KreuzbergOCREngine:
         vlm_backend: Optional[str] = None,
         vlm_base_url: Optional[str] = None,
         vlm_model: Optional[str] = None,
+        retarget_session: bool = True,
     ) -> Dict:
         start_time = time.time()
         pdf_path = Path(pdf_path)
@@ -183,7 +188,10 @@ class KreuzbergOCREngine:
             enable_vlm=self.enable_vlm_fallback,
         )
         log_path = attach_process_log_file(
-            processo, self.config, suffix=run_suffix
+            processo,
+            self.config,
+            suffix=run_suffix,
+            retarget_session=retarget_session,
         )
         logger.info("Processing PDF: %s (processo=%s)", pdf_path.name, processo)
         logger.info("Audit log: %s", log_path)
@@ -250,6 +258,40 @@ class KreuzbergOCREngine:
                 ),
             )
             self._layouts = load_pdf_layouts(pdf_path)
+
+            native_n = sum(1 for c in classifications if c.page_class == "native")
+            hybrid_n = sum(1 for c in classifications if c.page_class == "hybrid")
+            image_n = sum(1 for c in classifications if c.page_class == "image_page")
+            forced_skipped = sum(
+                1
+                for c in classifications
+                if c.force_image_ocr and c.page_class != "image_page"
+            )
+            logger.info(
+                "Classificação: total=%s native=%s hybrid=%s image_page=%s "
+                "(force_ocr ignorado por texto utilizável=%s)",
+                len(classifications),
+                native_n,
+                hybrid_n,
+                image_n,
+                forced_skipped,
+            )
+            if progress_callback:
+                try:
+                    progress_callback(
+                        0,
+                        len(classifications),
+                        {
+                            "type": "classification",
+                            "total_pages": len(classifications),
+                            "native_pages": native_n,
+                            "hybrid_pages": hybrid_n,
+                            "image_pages": image_n,
+                            "force_ocr_skipped": forced_skipped,
+                        },
+                    )
+                except Exception as cb_exc:
+                    logger.debug("Progress callback error: %s", cb_exc)
 
             pages_data: List[Dict] = []
             total = len(classifications)
@@ -835,7 +877,7 @@ class KreuzbergOCREngine:
             prefer_tables=prefer_tables or bool(form_kind in FORM_KINDS),
             force_tesseract=force_tesseract,
         )
-        kwargs = {"config": extraction_config}
+        kwargs: dict[str, Any] = {"config": extraction_config}
         if easyocr_kwargs is not None and not force_tesseract:
             kwargs["easyocr_kwargs"] = easyocr_kwargs
 
@@ -1351,7 +1393,7 @@ class KreuzbergOCREngine:
             force_ocr=True,
             prefer_tables=prefer_tables,
         )
-        kwargs = {"config": extraction_config}
+        kwargs: dict[str, Any] = {"config": extraction_config}
         if easyocr_kwargs is not None:
             kwargs["easyocr_kwargs"] = easyocr_kwargs
         mime_types = ["image/png"] * len(png_list)
