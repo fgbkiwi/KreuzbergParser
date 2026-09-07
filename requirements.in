@@ -1,5 +1,6 @@
-# Direct dependencies (loose). Update with: ./scripts/update_deps.sh
-# Resolved conflict-free pins are written to requirements.txt.
+# Direct dependencies (loose).
+# Linux/macOS: ./scripts/update_deps.sh  (writes conflict-free pins to requirements.txt)
+# Windows:     .\scripts\update_deps.ps1 -Sync  (torch CUDA + requirements.in; no Linux lock sync)
 
 # Core OCR and Document Processing
 # kreuzberg: o pin resolve as dependências, mas a instalação real usa o wheel

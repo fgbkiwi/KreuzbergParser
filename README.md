@@ -123,31 +123,34 @@ source .venv/bin/activate
 O fluxo depende do sistema operacional. Veja a seção
 [Dependências no Windows (uv)](#-dependências-no-windows-uv) para o motivo dessa diferença.
 
-#### Windows (uv)
+#### Windows (uv) — preferido
 
 ```powershell
-# 1) PyTorch com CUDA (ajuste cu130 conforme sua GPU — veja GPU Setup)
+.\scripts\update_deps.ps1 -Sync
+```
+
+Isso cria/usa `.venv` (Python 3.12), instala `torch`/`torchvision` do índice CUDA
+(`cu130` por padrão) e o restante a partir de `requirements.in`, com checagem de
+conflitos. Equivalente manual:
+
+```powershell
 uv pip install torch torchvision `
   --python .venv\Scripts\python.exe `
   --index-url https://download.pytorch.org/whl/cu130
-
-# 2) Demais dependências diretas do projeto
 uv pip install -r requirements.in --python .venv\Scripts\python.exe
 ```
 
 #### Linux / macOS
 
 ```bash
-# Sincroniza o lockfile gerado pelo script do projeto
+# Preferido: resolve lockfile + sync
+./scripts/update_deps.sh --sync --cuda cu130
+
+# Ou sync direto do lockfile gerado
 uv pip sync requirements.txt \
   --extra-index-url https://download.pytorch.org/whl/cu130 \
   --index-strategy unsafe-best-match
-```
 
-Preferido neste repo (Linux / macOS, uv + índice PyTorch cu130):
-
-```bash
-./scripts/update_deps.sh --sync --cuda cu130
 # PaddleOCR GPU nativo: wheel Kreuzberg com ort-dynamic
 ./scripts/build_kreuzberg_gpu.sh
 ```
@@ -157,7 +160,7 @@ Preferido neste repo (Linux / macOS, uv + índice PyTorch cu130):
 
 > No **Windows**, `pip install -r requirements.txt` e `uv pip sync requirements.txt`
 > falham porque o lockfile inclui pacotes NVIDIA (`nvidia-cufile`, etc.) compilados
-> apenas para Linux. Use o fluxo em duas etapas (`torch` + `requirements.in`) descrito acima.
+> apenas para Linux. Use `.\scripts\update_deps.ps1 -Sync`.
 
 ### Passo 4: Instalar Tesseract OCR
 
@@ -227,8 +230,8 @@ uv pip sync requirements.txt --extra-index-url https://download.pytorch.org/whl/
 o resolver tenta instalar pacotes como `nvidia-cufile`, que **não possuem wheel para
 `win_amd64`**. A instalação falha mesmo que o restante do stack seja compatível.
 
-**Solução:** instalar PyTorch a partir do índice oficial CUDA e, em seguida, resolver as
-dependências diretas a partir de `requirements.in` (sem os pacotes NVIDIA exclusivos do Linux).
+**Solução:** use `.\scripts\update_deps.ps1 -Sync` (ou o fluxo manual em duas etapas:
+PyTorch no índice CUDA + `requirements.in`), sem sincronizar o lockfile Linux.
 
 ### Grafo típico no Windows
 
@@ -267,14 +270,31 @@ instalação** para reproducibilidade, não bloqueios rígidos.
 ### Boas práticas no Windows
 
 - **Não atualize pacotes soltos** do stack CUDA (`torch`, `numpy`, etc.) sem re-resolver tudo.
-- Para atualizar dependências diretas com segurança:
-  ```powershell
-  uv pip install -r requirements.in --python .venv\Scripts\python.exe --upgrade
-  ```
+- Para atualizar com segurança: `.\scripts\update_deps.ps1 -Sync`
+- Só checar conflitos: `.\scripts\update_deps.ps1 -Check`
 - Para regenerar o lockfile completo (incluindo pins Linux), use `./scripts/update_deps.sh` em
   Linux ou WSL.
 - Nesta máquina (RTX 5060 Ti / Blackwell) use o índice **`cu130`**. Tags mais antigas
   não incluem `sm_120`.
+
+---
+
+## 📦 Instalador Windows (Pynsist)
+
+Para usuários finais: baixe o `.exe` em
+[Releases](https://github.com/fgbkiwi/KreuzbergParser/releases/latest).
+
+Para mantenedores (NSIS + `gh` autenticado se for publicar):
+
+```powershell
+.\scripts\update_deps.ps1 -Sync
+.\build_kreuzberg_parser_pynsist.ps1 -NoPublish   # gera build\nsis\KreuzbergParser_x.y.z.exe
+.\build_kreuzberg_parser_pynsist.ps1              # bump patch + build + Release
+.\build_kreuzberg_parser_pynsist.ps1 minor        # bump minor + Release
+```
+
+Fonte única da versão: `APP_VERSION` em `main.py` (inicia em **1.0.0**).
+`bump_version.py` sincroniza `kreuzberg_parser_pynsist.cfg` e `pyproject.toml`.
 
 ---
 
@@ -283,7 +303,11 @@ instalação** para reproducibilidade, não bloqueios rígidos.
 ### Iniciar Aplicação
 
 ```bash
+# Linux / macOS
 .venv/bin/python main.py
+
+# Windows
+.\.venv\Scripts\python.exe main.py
 ```
 
 A interface gráfica será aberta automaticamente.
@@ -313,10 +337,15 @@ A interface gráfica será aberta automaticamente.
 ```
 KreuzbergParser/
 │
-├── main.py                      # Entry point
+├── main.py                      # Entry point (+ APP_VERSION)
 ├── config.py                    # Configuração (modos, VLM, templates)
+├── _kreuzberg_launcher.py       # Entry point do instalador Pynsist
+├── kreuzberg_parser_pynsist.cfg # Config Pynsist
+├── bump_version.py              # Bump major.minor.patch
+├── build_kreuzberg_parser_pynsist.ps1
 ├── requirements.in              # Dependências diretas (editar aqui)
 ├── requirements.txt             # Lockfile com pins (Linux; gerado por update_deps.sh)
+├── pyproject.toml               # Metadados / versão
 │
 ├── core/
 │   ├── kreuzberg_engine.py     # Engine OCR + roteamento template/VLM
@@ -332,7 +361,8 @@ KreuzbergParser/
 ├── ui/app.py                    # Interface Flet (updates no loop da sessão)
 ├── utils/                       # GPU, logging, tessdata, páginas PDF, flet_ui
 ├── scripts/
-│   ├── update_deps.sh
+│   ├── update_deps.sh           # Linux: resolve + sync lockfile
+│   ├── update_deps.ps1          # Windows: torch CUDA + requirements.in
 │   ├── setup_nemotron_venv.sh
 │   ├── start_nemotron_parse.sh
 │   ├── install_cuda_toolkit.sh

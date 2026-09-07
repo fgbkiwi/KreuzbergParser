@@ -8,6 +8,11 @@ import logging
 import sys
 from pathlib import Path
 
+APP_NAME = "KreuzbergParser"
+APP_VERSION = "1.0.0"
+GITHUB_OWNER = "fgbkiwi"
+GITHUB_REPO = "KreuzbergParser"
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 

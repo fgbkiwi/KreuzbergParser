@@ -1,0 +1,10 @@
+[project]
+name = "kreuzberg-parser"
+version = "1.0.0"
+description = "OCR inteligente para PDFs judiciais trabalhistas (PJe), com UI Flet e Kreuzberg."
+requires-python = ">=3.12,<3.13"
+readme = "README.md"
+license = { text = "MIT" }
+
+[tool.uv]
+package = false

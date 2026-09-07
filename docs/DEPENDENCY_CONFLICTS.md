@@ -20,7 +20,8 @@ Orientação atual de GPU: [`GPU_SETUP.md`](../GPU_SETUP.md).
 O wheel padrão no PyPI é **CPU** (`+cpu` ou sem `+cuXXX`). Se ele entrar no ambiente ao mesmo tempo que builds CUDA (`+cu130`), EasyOCR/TrOCR podem cair em CPU ou quebrar imports.
 
 - Resolver/instalar `torch` / `torchvision` **só** a partir do índice PyTorch CUDA.
-- Use o script `./scripts/update_deps.sh` (merge com constraints) em vez de `pip install torch` solto.
+- Use `./scripts/update_deps.sh` (Linux) ou `.\scripts\update_deps.ps1` (Windows)
+  em vez de `pip install torch` solto.
 
 ### 2. Nenhum pacote Python do ecossistema Paddle no venv
 
@@ -68,6 +69,8 @@ Kreuzberg embute Tesseract e usa `TESSDATA_PREFIX` apontando para `tessdata/` do
 
 ## Instalação / sync
 
+### Linux / macOS
+
 ```bash
 uv pip sync requirements.txt \
   --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -84,5 +87,18 @@ Ou via script (resolve + opcional sync):
 O `--sync` reinstala automaticamente o wheel GPU local do Kreuzberg
 (`vendor/wheels/kreuzberg-*.whl`) por cima do wheel CPU do PyPI. Se o wheel
 não existir, gere-o com `./scripts/build_kreuzberg_gpu.sh`.
+
+### Windows
+
+**Não** use `uv pip sync requirements.txt` (pacotes NVIDIA só-Linux). Use:
+
+```powershell
+.\scripts\update_deps.ps1 -Sync          # torch (cu130) + requirements.in + checagem
+.\scripts\update_deps.ps1 -Check         # só valida conflitos no .venv
+.\scripts\update_deps.ps1 -Cuda cu130    # índice PyTorch (padrão)
+```
+
+O script remove pacotes Paddle/RapidOCR / `nvidia-cufile*` se aparecerem e
+normaliza OpenCV para um único provedor `cv2` (`opencv-python-headless`).
 
 Verificação periódica (aviso apenas, sem upgrade): `scripts/check_updates.py` — chamado de forma não bloqueante em `main.py`.

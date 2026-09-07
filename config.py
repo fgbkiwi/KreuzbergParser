@@ -30,11 +30,29 @@ def is_paddle_mode(mode) -> bool:
     )
 
 
+def _package_dir() -> Path:
+    """Directory that contains config.py / shipped app files."""
+    return Path(__file__).resolve().parent
+
+
+def _data_dir() -> Path:
+    """Writable data root (tessdata, poppler, logs, temp, output).
+
+    When installed via Pynsist under Program Files, set
+    ``KREUZBERG_PARSER_HOME`` (e.g. ``%LOCALAPPDATA%\\KreuzbergParser``).
+    """
+    override = (os.environ.get("KREUZBERG_PARSER_HOME") or "").strip()
+    if override:
+        return Path(override)
+    return _package_dir()
+
+
 class Config:
     """Simplified configuration with Kreuzberg integration"""
     
     # ===== PATHS =====
-    BASE_DIR = Path(__file__).parent
+    PACKAGE_DIR = _package_dir()
+    BASE_DIR = _data_dir()
     TEMP_DIR = BASE_DIR / "temp"
     LOG_DIR = BASE_DIR / "logs"
     OUTPUT_DIR = BASE_DIR / "output"
