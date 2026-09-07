@@ -10,7 +10,9 @@ import logging
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
@@ -186,23 +188,87 @@ def tesseract_available() -> bool:
     return _ensure_tesseract_cmd()
 
 
+_tesseract_resolved = False
+
+
+def _tesseract_names() -> tuple[str, ...]:
+    if sys.platform == "win32":
+        return ("tesseract.exe", "tesseract")
+    return ("tesseract", "tesseract.exe")
+
+
+def _tesseract_in_dir(directory: Path) -> Path | None:
+    for name in _tesseract_names():
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def _common_tesseract_dirs() -> Iterable[Path]:
+    home = Path.home()
+    yield home / "scoop" / "apps" / "tesseract" / "current"
+    if sys.platform == "win32":
+        yield Path(r"C:\Program Files\Tesseract-OCR")
+        yield Path(r"C:\Program Files (x86)\Tesseract-OCR")
+        yield Path(sys.prefix) / "Library" / "bin"
+    else:
+        yield Path("/usr/bin")
+        yield Path("/usr/local/bin")
+        yield Path("/opt/homebrew/bin")
+
+
+def _find_tesseract_binary() -> Path | None:
+    """Locate a Tesseract executable (PATH, env vars, common install dirs)."""
+    which = shutil.which("tesseract")
+    if which:
+        path = Path(which)
+        if path.is_file():
+            return path.resolve()
+
+    for key in ("TESSERACT_CMD", "TESSERACT_PATH"):
+        raw = os.environ.get(key, "").strip()
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if path.is_file():
+            return path.resolve()
+        if path.is_dir():
+            found = _tesseract_in_dir(path)
+            if found is not None:
+                return found
+
+    for directory in _common_tesseract_dirs():
+        found = _tesseract_in_dir(directory)
+        if found is not None:
+            return found
+    return None
+
+
 def _ensure_tesseract_cmd() -> bool:
+    global _tesseract_resolved
     if not _TESS_AVAILABLE:
         return False
+
+    if _tesseract_resolved:
+        current = getattr(pytesseract.pytesseract, "tesseract_cmd", "")
+        return bool(current and Path(str(current)).is_file())
+
     current = getattr(pytesseract.pytesseract, "tesseract_cmd", "tesseract")
-    if current and os.path.isfile(str(current)) and os.access(str(current), os.X_OK):
-        return True
-    found = shutil.which("tesseract")
-    for candidate in (
-        found,
-        "/usr/bin/tesseract",
-        "/usr/local/bin/tesseract",
-        "/opt/homebrew/bin/tesseract",
-    ):
-        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            pytesseract.pytesseract.tesseract_cmd = candidate
+    if current and current != "tesseract":
+        path = Path(str(current))
+        if path.is_file():
+            _tesseract_resolved = True
             return True
-    return False
+
+    found = _find_tesseract_binary()
+    if found is None:
+        return False
+
+    pytesseract.pytesseract.tesseract_cmd = str(found)
+    _tesseract_resolved = True
+    logger.info("Tesseract cmd=%s", found)
+    return True
 
 
 def ocr_words(

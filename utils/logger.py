@@ -81,12 +81,15 @@ def attach_process_log_file(
     *,
     timestamp: Optional[str] = None,
     suffix: Optional[str] = None,
+    retarget_session: bool = True,
 ) -> Path:
     """
     Attach a dedicated file handler:
     logs/{process_id}_{suffix}_{YYYYMMDD_HHMMSS}.log
 
     Replaces any previous process-specific handler. Returns the log path.
+    When retarget_session is False (batch jobs after the first), the session
+    log is left unchanged so it is not renamed on every PDF.
     """
     global _PROCESS_FILE_HANDLER, _PROCESS_LOG_PATH
 
@@ -99,7 +102,8 @@ def attach_process_log_file(
     ts = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     extra = f"_{suffix}" if suffix else ""
     log_path = config.LOG_DIR / f"{safe_id}{extra}_{ts}.log"
-    retarget_session_log(process_id, suffix=suffix)
+    if retarget_session:
+        retarget_session_log(process_id, suffix=suffix)
 
     root = logging.getLogger()
     if _PROCESS_FILE_HANDLER is not None:
@@ -260,13 +264,21 @@ def log_page_end(
     )
 
 
-def log_visible_alert(logger: logging.Logger, lines: Sequence[str]) -> None:
-    """Emit a high-visibility ERROR banner (file + console)."""
+def log_visible_alert(
+    logger: logging.Logger,
+    lines: Sequence[str],
+    *,
+    level: int = logging.WARNING,
+) -> None:
+    """
+    Emit a high-visibility banner as a single record.
+
+    One record per banner keeps the timestamp/level prefix off every line and
+    makes the block easy to spot (and to filter) in the log file.
+    """
     border = "=" * 78
-    logger.error(border)
-    for line in lines:
-        logger.error("%s", line if line else " ")
-    logger.error(border)
+    body = "\n".join(line if line else "" for line in lines)
+    logger.log(level, "\n%s\n%s\n%s", border, body, border)
 
 
 def _sanitize_filename(value: str) -> str:

@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Sequence, Set
 logger = logging.getLogger(__name__)
 
 _FLS_LINE_RE = re.compile(
-    r"(?mi)^\s*Fls[._]?\s*:?\s*\d+\s*$"
+    r"(?mi)^\s*Fls[._]?\s*:?\s*\d+(?:\s+\d+)?\s*$"
 )
 _SIGNATURE_LINE_RE = re.compile(
     r"(?mi)^\s*Documento assinado eletronicamente por .+?$"

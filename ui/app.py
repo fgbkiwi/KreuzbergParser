@@ -12,6 +12,7 @@ import threading
 from config import Config, ProcessingMode, is_gpu_mode
 from utils.gpu_detector import gpu_detector
 from utils.flet_ui import is_on_session_loop, session_loop
+from utils.logger import detach_process_log_file, log_visible_alert
 from core.kreuzberg_engine import KreuzbergOCREngine
 from core.markdown_converter import MarkdownConverter
 
@@ -30,10 +31,12 @@ class OCRApp:
         self._loop = session_loop(page)
 
         # State
-        self.pdf_path = None
+        self.pdf_queue: list[str] = []
         self.output_folder = None
         self.selected_mode = self._default_processing_mode()
         self.is_processing = False
+        self._queue_index = 0
+        self._queue_total = 0
         self._log_lines: list[str] = []
         self._log_lock = threading.Lock()
         self._pending_progress: tuple[float, str] | None = None
@@ -68,13 +71,21 @@ class OCRApp:
         self.folder_picker = ft.FilePicker()
         self.page.services.extend([self.pdf_picker, self.folder_picker])
 
-        self.pdf_path_field = ft.TextField(
-            label="Arquivo PDF",
-            read_only=True,
+        self.queue_count_text = ft.Text("0 PDF(s) na fila", size=13)
+
+        self.pdf_queue_list = ft.ListView(
             expand=True,
-            border_width=1,
-            border_color=ft.Colors.GREY_400,
-            hint_text="Clique no botão para selecionar...",
+            spacing=2,
+            padding=4,
+            auto_scroll=False,
+        )
+
+        self.clear_queue_button = ft.ElevatedButton(
+            content=ft.Text("Limpar fila"),
+            on_click=self.on_clear_queue_clicked,
+            icon=ft.Icons.CLEAR_ALL,
+            height=36,
+            disabled=True,
         )
 
         self.output_folder_field = ft.TextField(
@@ -165,7 +176,7 @@ class OCRApp:
 
         self.progress_bar = ft.ProgressBar(expand=True, visible=False)
         self.progress_text = ft.Text(
-            "Aguardando seleção de arquivo...", size=14
+            "Aguardando seleção de arquivos...", size=14
         )
 
         self.log_field = ft.TextField(
@@ -189,7 +200,7 @@ class OCRApp:
         )
 
         self.process_button = ft.ElevatedButton(
-            content=ft.Text("🚀 PROCESSAR PDF"),
+            content=ft.Text("🚀 PROCESSAR FILA"),
             on_click=self.on_process_clicked,
             disabled=True,
             width=200,
@@ -242,15 +253,23 @@ class OCRApp:
                                     ),
                                     ft.Row(
                                         [
-                                            self.pdf_path_field,
+                                            self.queue_count_text,
                                             ft.ElevatedButton(
-                                                content=ft.Text("📂 Selecionar PDF"),
+                                                content=ft.Text("📂 Selecionar PDFs"),
                                                 on_click=self.handle_pick_pdf,
                                                 icon=ft.Icons.PICTURE_AS_PDF,
                                                 width=190,
                                             ),
+                                            self.clear_queue_button,
                                         ],
                                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                    ft.Container(
+                                        height=110,
+                                        border=ft.Border.all(1, ft.Colors.GREY_400),
+                                        border_radius=4,
+                                        bgcolor=ft.Colors.WHITE,
+                                        content=self.pdf_queue_list,
                                     ),
                                     ft.Row(
                                         [
@@ -423,16 +442,86 @@ class OCRApp:
             return ft.ThemeMode.SYSTEM
         return value
 
+    def _refresh_queue_list(self):
+        self.pdf_queue_list.controls.clear()
+        for index, path in enumerate(self.pdf_queue):
+            name = Path(path).name
+            self.pdf_queue_list.controls.append(
+                ft.ListTile(
+                    dense=True,
+                    title=ft.Text(
+                        name,
+                        size=12,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                    subtitle=ft.Text(
+                        path,
+                        size=10,
+                        color=ft.Colors.GREY_600,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                    trailing=ft.IconButton(
+                        icon=ft.Icons.CLOSE,
+                        icon_size=16,
+                        tooltip="Remover da fila",
+                        data=index,
+                        on_click=self.on_remove_queue_item,
+                        disabled=self.is_processing,
+                    ),
+                )
+            )
+        n = len(self.pdf_queue)
+        self.queue_count_text.value = f"{n} PDF(s) na fila"
+        self.clear_queue_button.disabled = n == 0 or self.is_processing
+        self._update_process_button()
+
     async def handle_pick_pdf(self, e):
+        if self.is_processing:
+            return
         files = await self.pdf_picker.pick_files(
             file_type=ft.FilePickerFileType.CUSTOM,
             allowed_extensions=["pdf"],
+            allow_multiple=True,
         )
-        if files and files[0].path:
-            self.pdf_path = files[0].path
-            self.pdf_path_field.value = self.pdf_path
-            self._update_process_button()
+        if not files:
+            return
+
+        existing = set(self.pdf_queue)
+        added = 0
+        for f in files:
+            if not f.path:
+                continue
+            path = str(Path(f.path).resolve())
+            if path in existing:
+                continue
+            if not path.lower().endswith(".pdf"):
+                continue
+            self.pdf_queue.append(path)
+            existing.add(path)
+            added += 1
+
+        if added:
+            self._refresh_queue_list()
             self._patch_page()
+
+    def on_remove_queue_item(self, e):
+        if self.is_processing:
+            return
+        index = e.control.data
+        if index is None or index < 0 or index >= len(self.pdf_queue):
+            return
+        self.pdf_queue.pop(index)
+        self._refresh_queue_list()
+        self._patch_page()
+
+    def on_clear_queue_clicked(self, e):
+        if self.is_processing:
+            return
+        self.pdf_queue.clear()
+        self._refresh_queue_list()
+        self._patch_page()
 
     async def handle_pick_folder(self, e):
         path = await self.folder_picker.get_directory_path()
@@ -442,13 +531,12 @@ class OCRApp:
             self._update_process_button()
             self._patch_page()
 
-    async def on_save_log_clicked(self, e):
+    def on_save_log_clicked(self, e):
         if not self.output_folder:
             self.log_message("❌ Pasta de destino nao selecionada", ft.Colors.RED)
             return
 
-        with self._log_lock:
-            log_text = "\n".join(self._log_lines).strip()
+        log_text = self.log_field.value.strip()
         if not log_text:
             self.log_message("⚠️ Log vazio. Nada para salvar.", ft.Colors.ORANGE)
             return
@@ -464,7 +552,7 @@ class OCRApp:
             logger.exception("Error saving log")
             self.log_message(f"❌ Erro ao salvar log: {exc}", ft.Colors.RED)
 
-    async def on_vlm_backend_changed(self, e):
+    def on_vlm_backend_changed(self, e):
         preset = self.config.vlm_preset(self.vlm_dropdown.value)
         if preset["key"] == "off":
             self.log_message("VLM fallback desligado (só templates).", ft.Colors.BLUE_700)
@@ -475,7 +563,7 @@ class OCRApp:
             ft.Colors.BLUE_700,
         )
 
-    async def on_mode_changed(self, e):
+    def on_mode_changed(self, e):
         raw = getattr(e.control, "value", None) or e.control.value
         try:
             self.selected_mode = ProcessingMode(raw)
@@ -483,20 +571,17 @@ class OCRApp:
             self.selected_mode = ProcessingMode.CPU
 
         if is_gpu_mode(self.selected_mode) and not self.gpu_info["available"]:
-            if self.selected_mode == ProcessingMode.PADDLE_GPU:
-                self.log_message(
-                    "PaddleOCR GPU recusado: nenhuma GPU NVIDIA detectada. "
-                    "Este modo não cai para CPU — escolha PaddleOCR CPU ou "
-                    "corrija o driver NVIDIA.",
-                    ft.Colors.RED,
-                )
-                return
+            fallback = (
+                ProcessingMode.PADDLE_CPU
+                if self.selected_mode == ProcessingMode.PADDLE_GPU
+                else ProcessingMode.CPU
+            )
             self.log_message(
-                "⚠️ GPU não disponível. Usando modo CPU (EasyOCR).",
+                f"⚠️ GPU não disponível. Usando modo {fallback.value}.",
                 ft.Colors.ORANGE,
             )
-            self.selected_mode = ProcessingMode.CPU
-            self.mode_radio.value = ProcessingMode.CPU.value
+            self.selected_mode = fallback
+            self.mode_radio.value = fallback.value
 
         if not is_gpu_mode(self.selected_mode):
             self.enable_handwriting_check.value = False
@@ -507,7 +592,9 @@ class OCRApp:
         self._patch_page()
 
     def _update_process_button(self):
-        self.process_button.disabled = not (self.pdf_path and self.output_folder)
+        self.process_button.disabled = not (
+            bool(self.pdf_queue) and self.output_folder and not self.is_processing
+        )
 
     def _get_run_suffix(self) -> str:
         backend = self.config.resolve_vlm_backend(self.vlm_dropdown.value)
@@ -520,8 +607,12 @@ class OCRApp:
 
     def _get_log_filename(self, timestamp: str) -> str:
         suffix = self._get_run_suffix()
-        if self.pdf_path:
-            return f"{Path(self.pdf_path).stem}_log_conversao_{suffix}_{timestamp}.txt"
+        if len(self.pdf_queue) > 1:
+            return f"batch_log_conversao_{suffix}_{timestamp}.txt"
+        if len(self.pdf_queue) == 1:
+            return (
+                f"{Path(self.pdf_queue[0]).stem}_log_conversao_{suffix}_{timestamp}.txt"
+            )
         return f"log_conversao_{suffix}_{timestamp}.txt"
 
     def _describe_page_ocr(self, page_data: dict) -> str:
@@ -548,12 +639,25 @@ class OCRApp:
             return f"{status}{subtype_bit} ({library}, {device}{src_bit}{dur})"
         return f"tipo={page_type}"
 
-    async def on_process_clicked(self, e):
+    def _queue_label(self) -> str:
+        if self._queue_total <= 0:
+            return ""
+        return f"PDF {self._queue_index}/{self._queue_total}"
+
+    def on_process_clicked(self, e):
         if self.is_processing:
             return
 
-        if not self.pdf_path or not Path(self.pdf_path).exists():
-            self.log_message("❌ PDF inválido ou não encontrado", ft.Colors.RED)
+        if not self.pdf_queue:
+            self.log_message("❌ Nenhum PDF na fila", ft.Colors.RED)
+            return
+
+        missing = [p for p in self.pdf_queue if not Path(p).exists()]
+        if missing:
+            self.log_message(
+                f"❌ PDF(s) não encontrado(s): {', '.join(Path(p).name for p in missing)}",
+                ft.Colors.RED,
+            )
             return
 
         if not self.output_folder:
@@ -562,119 +666,276 @@ class OCRApp:
 
         self.is_processing = True
         self.process_button.disabled = True
+        self.clear_queue_button.disabled = True
+        self._refresh_queue_list()
         self.progress_bar.visible = True
         self.progress_bar.value = 0
-        self.progress_text.value = "Classificando páginas e iniciando OCR..."
+        self.progress_text.value = "Iniciando fila de conversão..."
         with self._log_lock:
             self._log_lines.clear()
         self.log_field.value = ""
         self._pending_progress = (0, self.progress_text.value)
         self._pending_stats = None
+        self.stats_field.value = "📊 Estatísticas:\n   • Aguardando classificação..."
         self._patch_page()
 
-        try:
-            await asyncio.to_thread(self.process_pdf)
-        finally:
-            self.is_processing = False
-            self.process_button.disabled = False
-            self._flush_ui_on_loop(True)
+        thread = threading.Thread(target=self.process_queue, daemon=True)
+        thread.start()
 
-    def process_pdf(self):
-        pdf_path = self.pdf_path
+    def process_queue(self):
+        queue = list(self.pdf_queue)
         output_folder = self.output_folder
-        if not pdf_path or not output_folder:
-            self.log_message("❌ PDF ou pasta de destino inválidos", ft.Colors.RED)
+        if not queue or not output_folder:
+            self.log_message("❌ Fila ou pasta de destino inválidos", ft.Colors.RED)
+            self.is_processing = False
+            self._update_process_button()
+            self.clear_queue_button.disabled = not self.pdf_queue
+            self._patch_page()
             return
 
-        engine = None
+        self._queue_total = len(queue)
+        ok_count = 0
+        fail_count = 0
+        batch_start = time.time()
+
+        enable_hw = bool(self.enable_handwriting_check.value)
+        vlm_backend = self.config.resolve_vlm_backend(self.vlm_dropdown.value)
+        vlm_preset = self.config.vlm_preset(vlm_backend)
+        enable_vlm = bool(vlm_preset.get("enabled"))
+
+        self.log_message(
+            f"🚀 Fila iniciada: {self._queue_total} PDF(s)",
+            ft.Colors.BLUE_700,
+        )
+        self.log_message(f"   Modo: {self.selected_mode}")
+        self.log_message(
+            f"   TrOCR manuscrito: {'sim' if enable_hw else 'não'}"
+        )
+        self.log_message(
+            f"   VLM fallback: {vlm_preset['label']}"
+            + (
+                f" ({vlm_preset.get('model')})"
+                if enable_vlm and vlm_preset.get("model")
+                else ""
+            )
+        )
+
+        engine = KreuzbergOCREngine(self.selected_mode, self.config)
+        if engine._paddle_gpu_fallback_text():
+            self.log_message(
+                "⚠️ Kreuzberg nativo recusou CUDA — OCR via PaddleOCR "
+                "oficial na GPU (não é CPU). Detalhes no final do log.",
+                ft.Colors.ORANGE_900,
+            )
+
         try:
-            start_time = time.time()
-            enable_hw = bool(self.enable_handwriting_check.value)
-            vlm_backend = self.config.resolve_vlm_backend(self.vlm_dropdown.value)
-            vlm_preset = self.config.vlm_preset(vlm_backend)
-            enable_vlm = bool(vlm_preset.get("enabled"))
-
-            self.log_message(f"🚀 Iniciando processamento: {Path(pdf_path).name}")
-            self.log_message(f"   Modo: {self.selected_mode}")
-            self.log_message(
-                f"   TrOCR manuscrito: {'sim' if enable_hw else 'não'}"
-            )
-            self.log_message(
-                f"   VLM fallback: {vlm_preset['label']}"
-                + (
-                    f" ({vlm_preset.get('model')})"
-                    if enable_vlm and vlm_preset.get("model")
-                    else ""
-                )
-            )
-
-            engine = KreuzbergOCREngine(self.selected_mode, self.config)
-            images_dir = Path(output_folder) / f"{Path(pdf_path).stem}_images"
-
-            def on_page_progress(current: int, total: int, page_data: dict):
-                ocr_desc = self._describe_page_ocr(page_data)
-                fls = page_data.get("fls")
-                fls_bit = f" (Fls. {fls})" if fls is not None else ""
+            for index, pdf_path in enumerate(queue):
+                self._queue_index = index + 1
+                name = Path(pdf_path).name
+                sep = "=" * 60
                 self.log_message(
-                    f"   Página {current}/{total}{fls_bit}: {ocr_desc}"
+                    f"\n{sep}\n===== {self._queue_label()}: {name} =====\n{sep}",
+                    ft.Colors.BLUE_700,
                 )
-                progress = current / total if total else 0
                 self.update_progress(
-                    min(progress, 0.95),
-                    f"Processando página {current}/{total}...",
+                    index / self._queue_total if self._queue_total else 0,
+                    f"{self._queue_label()}: {name} — iniciando...",
+                )
+                self.stats_field.value = (
+                    f"📊 Estatísticas ({self._queue_label()}):\n"
+                    f"   • Arquivo: {name}\n"
+                    f"   • Aguardando classificação..."
+                )
+                self._patch_page()
+
+                retarget = index == 0
+                try:
+                    self.process_one_pdf(
+                        engine=engine,
+                        pdf_path=pdf_path,
+                        output_folder=output_folder,
+                        enable_hw=enable_hw,
+                        enable_vlm=enable_vlm,
+                        vlm_backend=vlm_backend,
+                        retarget_session=retarget,
+                        queue_index=index,
+                    )
+                    ok_count += 1
+                except Exception as exc:
+                    fail_count += 1
+                    logger.exception("Error processing PDF in batch: %s", pdf_path)
+                    self.log_message(
+                        f"❌ Erro em {name}: {exc}",
+                        ft.Colors.RED,
+                    )
+                    self._emit_paddle_gpu_fallback_alert(
+                        engine._paddle_gpu_fallback_text()
+                    )
+                finally:
+                    detach_process_log_file()
+        finally:
+            batch_time = time.time() - batch_start
+            self.log_message(
+                f"\n🏁 Fila concluída em {batch_time:.2f}s — "
+                f"ok={ok_count} falha={fail_count} total={self._queue_total}",
+                ft.Colors.GREEN if fail_count == 0 else ft.Colors.ORANGE,
+            )
+            self.update_stats(
+                f"📊 Resumo da fila:\n"
+                f"   • Total: {self._queue_total}\n"
+                f"   • Sucesso: {ok_count}\n"
+                f"   • Falha: {fail_count}\n"
+                f"   • Tempo: {batch_time:.2f}s"
+            )
+            if fail_count == 0:
+                self.update_progress(1.0, "✅ Fila concluída!")
+            else:
+                self.update_progress(
+                    1.0,
+                    f"⚠️ Fila concluída com {fail_count} falha(s)",
                 )
 
-            self.update_progress(0.02, "Extraindo e classificando páginas...")
-            result = engine.process_pdf(
-                pdf_path,
-                progress_callback=on_page_progress,
-                enable_handwriting=enable_hw,
-                images_output_dir=images_dir,
-                enable_vlm=enable_vlm,
-                vlm_backend=vlm_backend,
-            )
-
-            self.log_message("📝 Gerando arquivo Markdown...")
-            converter = MarkdownConverter(self.config)
-            run_suffix = self._get_run_suffix()
-            output_filename = f"{Path(pdf_path).stem}_ocr_{run_suffix}.md"
-            output_path = Path(output_folder) / output_filename
-            md_path = converter.convert_to_markdown(result, str(output_path))
-            self.log_message(f"✅ Markdown salvo: {md_path}", ft.Colors.GREEN)
-
-            audit_log = result.get("metadata", {}).get("log_path")
-            if audit_log:
-                self.log_message(f"🧾 Log de auditoria: {audit_log}")
-
-            total_time = time.time() - start_time
-            stats = result["statistics"]
-
-            self.log_message(
-                f"\n🎉 Processamento concluído em {total_time:.2f}s!",
-                ft.Colors.GREEN,
-            )
-
-            stats_text = (
-                f"📊 Estatísticas:\n"
-                f"   • Total de páginas: {stats['total_pages']}\n"
-                f"   • Páginas nativas: {stats.get('native_pages', 0)}\n"
-                f"   • Páginas híbridas: {stats.get('hybrid_pages', 0)}\n"
-                f"   • Páginas OCR: "
-                f"{stats.get('image_pages', stats.get('scanned_pages', 0))}\n"
-                f"   • Páginas com tabelas: {stats['pages_with_tables']}\n"
-                f"   • Total de palavras: {stats['total_words']:,}\n"
-                f"   • Velocidade: {stats['processing_speed']}"
-            )
-            self.update_stats(stats_text)
-            self.update_progress(1.0, "✅ Concluido!")
-
-        except Exception as e:
-            logger.exception("Error processing PDF")
-            self.log_message(f"❌ Erro: {str(e)}", ft.Colors.RED)
-            self.update_progress(0, "❌ Erro no processamento")
-
-        finally:
+            self.is_processing = False
+            self._queue_index = 0
+            self._queue_total = 0
+            self._refresh_queue_list()
             self._schedule_ui_flush(force=True)
+
+    def process_one_pdf(
+        self,
+        *,
+        engine: KreuzbergOCREngine,
+        pdf_path: str,
+        output_folder: str,
+        enable_hw: bool,
+        enable_vlm: bool,
+        vlm_backend: str,
+        retarget_session: bool,
+        queue_index: int,
+    ) -> None:
+        start_time = time.time()
+        name = Path(pdf_path).name
+        queue_label = self._queue_label()
+        total_pdfs = self._queue_total or 1
+
+        self.log_message(f"🚀 Iniciando processamento: {name}")
+        images_dir = Path(output_folder) / f"{Path(pdf_path).stem}_images"
+
+        def on_page_progress(current: int, total: int, page_data: dict):
+            if page_data.get("type") == "classification":
+                planned = (
+                    f"📊 Classificação ({queue_label}):\n"
+                    f"   • Arquivo: {name}\n"
+                    f"   • Total de páginas: {page_data.get('total_pages', total)}\n"
+                    f"   • Páginas nativas: {page_data.get('native_pages', 0)}\n"
+                    f"   • Páginas híbridas: {page_data.get('hybrid_pages', 0)}\n"
+                    f"   • Páginas OCR: {page_data.get('image_pages', 0)}"
+                )
+                skipped = int(page_data.get("force_ocr_skipped") or 0)
+                if skipped:
+                    planned += (
+                        f"\n   • Force-OCR dispensado (texto utilizável): {skipped}"
+                    )
+                self.update_stats(planned)
+                self.log_message(
+                    f"📋 Classificação: nativas={page_data.get('native_pages', 0)} "
+                    f"híbridas={page_data.get('hybrid_pages', 0)} "
+                    f"OCR={page_data.get('image_pages', 0)}"
+                    + (f" (force dispensado={skipped})" if skipped else "")
+                )
+                page_frac = 0.05
+                global_progress = (queue_index + page_frac) / total_pdfs
+                self.update_progress(
+                    global_progress,
+                    f"{queue_label}: {name} — classificado "
+                    f"({page_data.get('image_pages', 0)} OCR)...",
+                )
+                return
+
+            ocr_desc = self._describe_page_ocr(page_data)
+            fls = page_data.get("fls")
+            fls_bit = f" (Fls. {fls})" if fls is not None else ""
+            self.log_message(
+                f"   Página {current}/{total}{fls_bit}: {ocr_desc}"
+            )
+            page_frac = min((current / total) if total else 0, 0.95)
+            global_progress = (queue_index + page_frac) / total_pdfs
+            self.update_progress(
+                global_progress,
+                f"{queue_label}: {name} — página {current}/{total}...",
+            )
+
+        self.update_progress(
+            queue_index / total_pdfs,
+            f"{queue_label}: {name} — extraindo e classificando...",
+        )
+        result = engine.process_pdf(
+            pdf_path,
+            progress_callback=on_page_progress,
+            enable_handwriting=enable_hw,
+            images_output_dir=images_dir,
+            enable_vlm=enable_vlm,
+            vlm_backend=vlm_backend,
+            retarget_session=retarget_session,
+        )
+
+        self.log_message("📝 Gerando arquivo Markdown...")
+        converter = MarkdownConverter(self.config)
+        run_suffix = self._get_run_suffix()
+        output_filename = f"{Path(pdf_path).stem}_ocr_{run_suffix}.md"
+        output_path = Path(output_folder) / output_filename
+        md_path = converter.convert_to_markdown(result, str(output_path))
+        self.log_message(f"✅ Markdown salvo: {md_path}", ft.Colors.GREEN)
+
+        audit_log = result.get("metadata", {}).get("log_path")
+        if audit_log:
+            self.log_message(f"🧾 Log de auditoria: {audit_log}")
+
+        total_time = time.time() - start_time
+        stats = result["statistics"]
+
+        self.log_message(
+            f"🎉 {name} concluído em {total_time:.2f}s!",
+            ft.Colors.GREEN,
+        )
+
+        stats_text = (
+            f"📊 Estatísticas ({queue_label}):\n"
+            f"   • Arquivo: {name}\n"
+            f"   • Total de páginas: {stats['total_pages']}\n"
+            f"   • Páginas nativas: {stats.get('native_pages', 0)}\n"
+            f"   • Páginas híbridas: {stats.get('hybrid_pages', 0)}\n"
+            f"   • Páginas OCR: "
+            f"{stats.get('image_pages', stats.get('scanned_pages', 0))}\n"
+            f"   • Páginas com tabelas: {stats['pages_with_tables']}\n"
+            f"   • Total de palavras: {stats['total_words']:,}\n"
+            f"   • Velocidade: {stats['processing_speed']}"
+        )
+        self.update_stats(stats_text)
+        self.update_progress(
+            (queue_index + 1) / total_pdfs,
+            f"{queue_label}: {name} — concluído",
+        )
+
+        self._emit_paddle_gpu_fallback_alert(
+            result.get("metadata", {}).get("paddle_gpu_fallback_alert"),
+            audit_log=audit_log,
+        )
+
+    def _emit_paddle_gpu_fallback_alert(self, alert, *, audit_log=None) -> None:
+        if not alert:
+            return
+        border = "!" * 78
+        self.log_message(f"\n{border}\n{alert}\n{border}", ft.Colors.ORANGE_900)
+        if audit_log:
+            self.log_message(
+                f"Traceback completo do probe nativo: {audit_log}",
+                ft.Colors.ORANGE_900,
+            )
+        log_visible_alert(
+            logger,
+            ["[fim da sessão]"] + str(alert).splitlines(),
+        )
 
     def log_message(self, message: str, color=None):
         with self._log_lock:
@@ -745,9 +1006,22 @@ class OCRApp:
             self.stats_field.value = pending_stats
             controls.append(self.stats_field)
         if force:
-            controls.append(self.process_button)
+            controls.extend(
+                [
+                    c
+                    for c in (
+                        getattr(self, "process_button", None),
+                        getattr(self, "clear_queue_button", None),
+                        getattr(self, "pdf_queue_list", None),
+                        getattr(self, "queue_count_text", None),
+                    )
+                    if c is not None
+                ]
+            )
 
         self._patch_page(*controls)
+
+
 
 
 def run_app():

@@ -13,14 +13,18 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
-    import kreuzberg
+    import kreuzberg as _kreuzberg_mod
     KREUZBERG_AVAILABLE = True
 except ImportError:
+    _kreuzberg_mod = None
     KREUZBERG_AVAILABLE = False
     logging.warning("Kreuzberg not installed. Install with: pip install kreuzberg")
+
+# Any: ImportError leaves the module unbound; callers check KREUZBERG_AVAILABLE.
+kreuzberg: Any = _kreuzberg_mod
 
 from config import Config, ProcessingMode, is_gpu_mode
 from core.form_templates import TEMPLATE_KINDS, try_structured_extraction
@@ -28,8 +32,10 @@ from core.labor_forms import format_labor_document, refine_kind
 from core.letterhead import apply_letterhead_strip
 from core.page_classifier import (
     classify_pdf_pages,
+    collect_fls_numbers,
     extract_cnj_process_number,
     extract_page_images_to_dir,
+    prefer_process_folio,
 )
 from core.page_layout import (
     LayoutRect,
@@ -52,6 +58,10 @@ logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int, Dict], None]
 
+# The native CUDA probe costs a full PaddleOCR model load (~25s), so its verdict
+# is reused for the lifetime of the process.
+_NATIVE_PADDLE_CUDA_PROBE: Optional[Tuple[bool, Optional[BaseException], object]] = None
+
 # Document kinds that benefit from high DPI + Tesseract tables
 FORM_KINDS = {
     "trct",
@@ -68,8 +78,8 @@ FORM_KINDS = {
 class KreuzbergOCREngine:
     """Page-aware OCR engine using Kreuzberg + Poppler classification."""
 
-    def __init__(self, mode: ProcessingMode, config: Config = None):
-        if not KREUZBERG_AVAILABLE:
+    def __init__(self, mode: ProcessingMode, config: Optional[Config] = None):
+        if not KREUZBERG_AVAILABLE or kreuzberg is None:
             raise ImportError(
                 "Kreuzberg library not installed. Run: pip install kreuzberg"
             )
@@ -78,6 +88,9 @@ class KreuzbergOCREngine:
         self.config = config or Config()
         self.mode_config = self.config.get_mode_config(mode)
         self._handwriting_detector = None
+        self._paddle_gpu = None
+        self._paddle_native_cuda_error: Optional[BaseException] = None
+        self._paddle_gpu_fallback_lines: List[str] = []
         self._sumario = {}
         self._layouts = {}
         self.enable_template_extraction = bool(
@@ -126,7 +139,7 @@ class KreuzbergOCREngine:
 
     def process_pdf(
         self,
-        pdf_path: str,
+        pdf_path: str | Path,
         *,
         progress_callback: Optional[ProgressCallback] = None,
         enable_handwriting: bool = False,
@@ -136,6 +149,7 @@ class KreuzbergOCREngine:
         vlm_backend: Optional[str] = None,
         vlm_base_url: Optional[str] = None,
         vlm_model: Optional[str] = None,
+        retarget_session: bool = True,
     ) -> Dict:
         start_time = time.time()
         pdf_path = Path(pdf_path)
@@ -161,16 +175,24 @@ class KreuzbergOCREngine:
         if vlm_model:
             self.vlm_model = vlm_model
 
+        # Before run_file_suffix, so the log/output names match what really ran.
+        if self.enable_vlm_fallback:
+            self._check_vlm_endpoint()
+
         run_suffix = self.config.run_file_suffix(
             self.mode,
             vlm_backend,
             enable_vlm=self.enable_vlm_fallback,
         )
         log_path = attach_process_log_file(
-            processo, self.config, suffix=run_suffix
+            processo,
+            self.config,
+            suffix=run_suffix,
+            retarget_session=retarget_session,
         )
         logger.info("Processing PDF: %s (processo=%s)", pdf_path.name, processo)
         logger.info("Audit log: %s", log_path)
+        self._log_paddle_gpu_fallback_alert(etapa="início do processamento")
 
         if images_output_dir is None:
             images_dir = pdf_path.parent / f"{pdf_path.stem}_images"
@@ -233,6 +255,40 @@ class KreuzbergOCREngine:
                 ),
             )
             self._layouts = load_pdf_layouts(pdf_path)
+
+            native_n = sum(1 for c in classifications if c.page_class == "native")
+            hybrid_n = sum(1 for c in classifications if c.page_class == "hybrid")
+            image_n = sum(1 for c in classifications if c.page_class == "image_page")
+            forced_skipped = sum(
+                1
+                for c in classifications
+                if c.force_image_ocr and c.page_class != "image_page"
+            )
+            logger.info(
+                "Classificação: total=%s native=%s hybrid=%s image_page=%s "
+                "(force_ocr ignorado por texto utilizável=%s)",
+                len(classifications),
+                native_n,
+                hybrid_n,
+                image_n,
+                forced_skipped,
+            )
+            if progress_callback:
+                try:
+                    progress_callback(
+                        0,
+                        len(classifications),
+                        {
+                            "type": "classification",
+                            "total_pages": len(classifications),
+                            "native_pages": native_n,
+                            "hybrid_pages": hybrid_n,
+                            "image_pages": image_n,
+                            "force_ocr_skipped": forced_skipped,
+                        },
+                    )
+                except Exception as cb_exc:
+                    logger.debug("Progress callback error: %s", cb_exc)
 
             pages_data: List[Dict] = []
             total = len(classifications)
@@ -319,11 +375,24 @@ class KreuzbergOCREngine:
                     "vlm_model": self.vlm_model,
                     "vlm_base_url": self.vlm_base_url,
                     "ocr_library": self._ocr_library(),
+                    "paddle_gpu_fallback": self._paddle_gpu is not None,
+                    "paddle_gpu_fallback_alert": self._paddle_gpu_fallback_text(),
+                    "paddle_native_cuda_error": (
+                        f"{type(self._paddle_native_cuda_error).__name__}: "
+                        f"{self._paddle_native_cuda_error}"
+                        if self._paddle_native_cuda_error
+                        else None
+                    ),
                 },
             }
         except Exception:
             logger.exception("Error processing PDF: %s", pdf_path.name)
             raise
+        finally:
+            self._log_paddle_gpu_fallback_alert(
+                etapa="fim do processamento",
+                include_traceback=True,
+            )
 
     # ------------------------------------------------------------------
     # Per-page processing
@@ -416,6 +485,8 @@ class KreuzbergOCREngine:
                 )
                 page_data["device"] = self._ocr_device()
                 page_data["library"] = self._ocr_library()
+                page_data["fls"] = classification.stamp.fls
+                page_data["marker_page_number"] = classification.stamp.fls
                 device = page_data["device"]
                 library = page_data["library"]
         except Exception as exc:
@@ -628,6 +699,13 @@ class KreuzbergOCREngine:
 
         # Resolve kind: sumario first, then OCR keywords
         kind = refine_kind(kind, body) or detect_doc_kind_from_text(body)
+        ocr_folio = prefer_process_folio(
+            collect_fls_numbers(ocr_text) + collect_fls_numbers(body)
+        )
+        if ocr_folio and (
+            classification.stamp.fls is None or ocr_folio >= classification.stamp.fls
+        ):
+            classification.stamp.fls = ocr_folio
         if kind in FORM_KINDS and not table_mds and self.mode_config.get("backend") != "tesseract":
             # Second pass with Tesseract for table layout
             try:
@@ -784,12 +862,19 @@ class KreuzbergOCREngine:
         mime_type: str = "image/png",
     ):
         """Run OCR on image bytes."""
+        if (
+            self._paddle_gpu is not None
+            and not force_tesseract
+            and self.mode == ProcessingMode.PADDLE_GPU
+        ):
+            return self._paddle_gpu.ocr_png_bytes(png_bytes)
+
         extraction_config, easyocr_kwargs = self._build_extraction_config(
             force_ocr=True,
             prefer_tables=prefer_tables or bool(form_kind in FORM_KINDS),
             force_tesseract=force_tesseract,
         )
-        kwargs = {"config": extraction_config}
+        kwargs: dict[str, Any] = {"config": extraction_config}
         if easyocr_kwargs is not None and not force_tesseract:
             kwargs["easyocr_kwargs"] = easyocr_kwargs
 
@@ -856,6 +941,8 @@ class KreuzbergOCREngine:
                 paddle_kwargs["rec_batch_num"] = rec_batch
             det_limit = self.mode_config.get("det_limit_side_len")
             if det_limit:
+                # PaddleOcrConfig has no det_limit_type; native Kreuzberg path
+                # only gets det_limit_side_len (see GPU_SETUP.md).
                 paddle_kwargs["det_limit_side_len"] = int(det_limit)
             try:
                 paddle_cfg = kreuzberg.PaddleOcrConfig(**paddle_kwargs)
@@ -937,6 +1024,8 @@ class KreuzbergOCREngine:
             return "kreuzberg+easyocr"
         if backend == "paddleocr":
             if self.mode == ProcessingMode.PADDLE_GPU:
+                if self._paddle_gpu is not None:
+                    return "paddleocr+onnxruntime+cuda"
                 return "kreuzberg+paddleocr+cuda"
             return "kreuzberg+paddleocr"
         return "kreuzberg+tesseract"
@@ -951,19 +1040,42 @@ class KreuzbergOCREngine:
                 "Instale com: uv pip install onnxruntime-gpu>=1.27. "
                 "Este modo não cai para CPU."
             )
-        ok, probe_exc = self._probe_kreuzberg_paddle_cuda()
+        ok, probe_exc, probe_cfg = self._probe_kreuzberg_paddle_cuda()
         if ok:
             logger.info(
                 "Kreuzberg nativo aceitou PaddleOCR CUDA "
                 "(AccelerationConfig provider=cuda device_id=%s)",
                 self._cuda_device_id(),
             )
+            self._paddle_gpu = None
+            self._paddle_native_cuda_error = None
+            self._paddle_gpu_fallback_lines = []
             return
 
-        raise RuntimeError(self._paddle_native_cuda_error_text(probe_exc)) from probe_exc
+        # No OfficialPaddleGpuOcr fallback: require the ort-dynamic wheel
+        # (scripts/build_kreuzberg_gpu.sh on Linux). Windows lacks that wheel yet.
+        self._paddle_native_cuda_error = probe_exc
+        self._paddle_gpu_fallback_lines = []
+        self._paddle_gpu = None
+        raise RuntimeError(
+            self._paddle_native_cuda_error_text(probe_exc, probe_cfg)
+        ) from probe_exc
 
-    def _probe_kreuzberg_paddle_cuda(self) -> tuple[bool, Optional[BaseException]]:
-        """True when Kreuzberg's native PaddleOCR accepts AccelerationConfig cuda."""
+    def _probe_kreuzberg_paddle_cuda(
+        self,
+    ) -> tuple[bool, Optional[BaseException], Optional[object]]:
+        """True when Kreuzberg's bundled PaddleOCR accepts AccelerationConfig cuda."""
+        global _NATIVE_PADDLE_CUDA_PROBE
+        if _NATIVE_PADDLE_CUDA_PROBE is not None:
+            return _NATIVE_PADDLE_CUDA_PROBE
+        result = self._run_kreuzberg_paddle_cuda_probe()
+        _NATIVE_PADDLE_CUDA_PROBE = result
+        return result
+
+    def _run_kreuzberg_paddle_cuda_probe(
+        self,
+    ) -> tuple[bool, Optional[BaseException], Optional[object]]:
+        cfg = None
         try:
             from io import BytesIO
 
@@ -975,29 +1087,83 @@ class KreuzbergOCREngine:
             img.save(buf, format="PNG")
             cfg, _kwargs = self._build_extraction_config(force_ocr=True)
             kreuzberg.extract_bytes_sync(buf.getvalue(), "image/png", config=cfg)
-            return True, None
+            return True, None, cfg
         except Exception as exc:
-            return False, exc
+            return False, exc, cfg
 
-    def _paddle_native_cuda_error_text(self, exc: Optional[BaseException]) -> str:
+    def _paddle_native_cuda_error_text(
+        self,
+        exc: Optional[BaseException],
+        probe_cfg=None,
+    ) -> str:
         from utils.ort_runtime import ort_runtime_snapshot
 
         snap = ort_runtime_snapshot()
+        acc = getattr(probe_cfg, "acceleration", None) if probe_cfg is not None else None
+        ocr = getattr(probe_cfg, "ocr", None) if probe_cfg is not None else None
+        paddle = getattr(ocr, "paddle_ocr_config", None) if ocr is not None else None
         kreuzberg_ver = getattr(kreuzberg, "__version__", "desconhecida")
+        err_text = str(exc or "")
+        bundled_hint = (
+            "sim (mensagem típica do wheel com feature ort-bundled)"
+            if "not available in the loaded ONNX Runtime" in err_text
+            or "ORT_DYLIB_PATH" in err_text
+            else "indeterminado — ver traceback"
+        )
         lines = [
             "PaddleOCR GPU recusado: o Kreuzberg nativo não aceitou CUDA.",
-            "Este modo não usa fallback — corrija o ambiente ou use PaddleOCR CPU.",
+            "Este modo não usa fallback — corrija o ambiente ou use PaddleOCR CPU / EasyOCR GPU.",
+            "",
             f"Exceção: {type(exc).__name__ if exc else 'desconhecida'}: {exc}",
             f"Kreuzberg: {kreuzberg_ver}",
+            f"AccelerationConfig.provider: {getattr(acc, 'provider', '-')}",
+            f"AccelerationConfig.device_id: {getattr(acc, 'device_id', '-')}",
+            f"PaddleOcrConfig.model_tier: {getattr(paddle, 'model_tier', '-')}",
+            f"PaddleOcrConfig.padding: {getattr(paddle, 'padding', '-')}",
             f"Python onnxruntime-gpu: {snap.get('onnxruntime_version') or '-'}",
             f"ORT providers: {snap.get('onnxruntime_providers') or '-'}",
             f"ORT_DYLIB_PATH: {snap.get('ORT_DYLIB_PATH') or '-'}",
+            f"ORT capi: {snap.get('capi_dir') or '-'}",
+            f"ORT CUDA library: {snap.get('cuda_provider_library') or '-'}",
+            f"Plataforma: {snap.get('platform') or '-'}",
+            f"ORT empacotado no Kreuzberg (ort-bundled): {bundled_hint}",
+            "",
             "Requisitos: wheel do Kreuzberg compilado com ort-dynamic "
-            "(scripts/build_kreuzberg_gpu.sh), onnxruntime-gpu instalado via uv "
+            "(scripts/build_kreuzberg_gpu.sh no Linux), onnxruntime-gpu instalado "
             "e ORT_DYLIB_PATH configurado antes de importar kreuzberg "
             "(https://docs.kreuzberg.dev/reference/environment-variables/#ort_dylib_path).",
+            "No Windows o wheel ort-dynamic ainda não está disponível — use EasyOCR GPU.",
         ]
         return "\n".join(lines)
+
+    def _paddle_gpu_fallback_text(self) -> str:
+        """Kept for UI compatibility; native path no longer uses a GPU fallback."""
+        if not self._paddle_gpu_fallback_lines:
+            return ""
+        return "\n".join(self._paddle_gpu_fallback_lines)
+
+    def _log_paddle_gpu_fallback_alert(
+        self, *, etapa: str, include_traceback: bool = False
+    ) -> None:
+        """No-op: PaddleOCR GPU either runs natively or fails at init."""
+        return
+
+    def _check_vlm_endpoint(self) -> None:
+        """
+        Probe the VLM once per run and disable the fallback if it is down.
+
+        Otherwise every page that misses a template pays a failed connection and
+        logs the same outage.
+        """
+        from core.vlm_ocr import reset_vlm_health, vlm_available
+
+        reset_vlm_health()
+        if vlm_available(
+            base_url=self.vlm_base_url or None,
+            model=self.vlm_model or None,
+        ):
+            return
+        self.enable_vlm_fallback = False
 
     def _cuda_device_id(self) -> int:
         try:
@@ -1170,7 +1336,7 @@ class KreuzbergOCREngine:
             force_ocr=True,
             prefer_tables=prefer_tables,
         )
-        kwargs = {"config": extraction_config}
+        kwargs: dict[str, Any] = {"config": extraction_config}
         if easyocr_kwargs is not None:
             kwargs["easyocr_kwargs"] = easyocr_kwargs
         mime_types = ["image/png"] * len(png_list)
@@ -1201,6 +1367,8 @@ class KreuzbergOCREngine:
 
     def _can_batch_ocr(self, classifications: Sequence) -> bool:
         """True when Kreuzberg can OCR several rasters in one call."""
+        if self._paddle_gpu is not None:
+            return False
         return len(classifications) >= 2 and hasattr(
             kreuzberg, "batch_extract_bytes_sync"
         )

@@ -16,9 +16,13 @@ import os
 import re
 import urllib.error
 import urllib.request
-from typing import Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# Endpoints that refused a connection, so a whole run does not pay one failed
+# connect (and one warning) per page. Cleared by reset_vlm_health().
+_unreachable: Dict[str, str] = {}
 
 LLAMAPARSE_SYSTEM_PROMPT = """\
 Você é um extrator de documentos judiciais brasileiros. Transcreva a página \
@@ -66,6 +70,14 @@ def parse_page_image(
     timeout_s = float(timeout_s if timeout_s is not None else _cfg(Config, "VLM_TIMEOUT_S", 90))
 
     if not png_bytes:
+        return None
+
+    if base_url in _unreachable:
+        logger.debug(
+            "VLM ignorado: %s inacessível nesta execução (%s)",
+            base_url,
+            _unreachable[base_url],
+        )
         return None
 
     parse_mode = _is_nemotron_parse(model)
@@ -119,7 +131,7 @@ def parse_page_image(
         logger.warning("VLM HTTP %s (%s): %s", exc.code, url, detail)
         return None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        logger.warning("VLM unavailable at %s: %s", url, exc)
+        _mark_unreachable(base_url, model, exc)
         return None
 
     try:
@@ -139,6 +151,7 @@ def parse_page_image(
 def vlm_available(
     *,
     base_url: Optional[str] = None,
+    model: Optional[str] = None,
     timeout_s: float = 2.0,
 ) -> bool:
     """Cheap health check against the OpenAI-compatible `/models` endpoint."""
@@ -151,9 +164,34 @@ def vlm_available(
     request = urllib.request.Request(url, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
-            return 200 <= response.status < 300
-    except Exception:
+            ok = 200 <= response.status < 300
+    except Exception as exc:
+        _mark_unreachable(base_url, model, exc)
         return False
+    if ok:
+        _unreachable.pop(base_url, None)
+    return ok
+
+
+def reset_vlm_health() -> None:
+    """Forget cached unreachable endpoints (call once per processing run)."""
+    _unreachable.clear()
+
+
+def _mark_unreachable(base_url: str, model: Optional[str], exc: BaseException) -> None:
+    """Log the outage once per endpoint and skip further attempts."""
+    if base_url in _unreachable:
+        return
+    _unreachable[base_url] = str(exc)
+    logger.warning(
+        "VLM indisponível em %s (%s). O fallback VLM fica desativado nesta "
+        "execução; a extração segue por template + OCR. Para habilitar, suba o "
+        "servidor (Ollama: `ollama serve` + `ollama pull %s`) ou desmarque o "
+        "fallback VLM na interface.",
+        base_url,
+        exc,
+        model or "qwen2.5vl:7b",
+    )
 
 
 def postprocess_nemotron_parse(text: str) -> str:

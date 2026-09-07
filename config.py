@@ -134,7 +134,12 @@ class Config:
             "model_tier": "server",
             "padding": 16,
             "rec_batch_num": 16,
-            "det_limit_side_len": 1920,
+            # Detection runs on a downscaled copy; recognition still crops from
+            # the 300 DPI raster. Above ~1920 the server detector falls off a
+            # cliff (16s/page vs 1s) without recovering more text.
+            "det_limit_side_len": 1600,
+            "det_limit_type": "max",
+            "cudnn_conv_algo_search": "HEURISTIC",
         },
         ProcessingMode.PADDLE_CPU: {
             "backend": "paddleocr",
@@ -151,6 +156,7 @@ class Config:
             "padding": 10,
             "rec_batch_num": 6,
             "det_limit_side_len": 960,
+            "det_limit_type": "max",
         },
     }
 

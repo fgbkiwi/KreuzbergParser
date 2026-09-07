@@ -22,7 +22,11 @@ from typing import Any, Dict, Iterable, List, Optional
 logger = logging.getLogger(__name__)
 
 _cuda_ready: Optional[bool] = None
+_logs_quieted = False
 _CUDA_PROVIDER = "CUDAExecutionProvider"
+
+# ORT severity: 0=VERBOSE 1=INFO 2=WARNING 3=ERROR 4=FATAL
+_DEFAULT_LOG_SEVERITY = 3
 
 
 def _unique_existing_dirs(candidates: Iterable[Path]) -> List[Path]:
@@ -165,6 +169,41 @@ def preload_cuda_runtime() -> None:
         logger.debug("ctypes preload of ORT CUDA provider skipped", exc_info=True)
 
 
+def quiet_ort_logs() -> None:
+    """
+    Drop ORT's per-session warnings, which are benign here and flood the log.
+
+    Three appear on every PaddleOCR session and none indicate a real problem:
+      - "Removing initializer 'p2o.pd_op...'": Paddle→ONNX exports carry unused
+        initializers; ORT prunes them.
+      - "No registered plugin EP device found for 'CUDAExecutionProvider'":
+        ORT 1.23+ queries the new plugin-EP registry (CPU-only in the
+        onnxruntime-gpu wheel) before the provider-bridge path that does load
+        CUDA. The session still ends up on CUDAExecutionProvider.
+      - "Some nodes were not assigned to the preferred execution providers":
+        ORT deliberately keeps shape ops on CPU.
+
+    Set ORT_LOG_SEVERITY (0..4) to see them again.
+    """
+    global _logs_quieted
+    if _logs_quieted:
+        return
+    raw = (os.environ.get("ORT_LOG_SEVERITY") or "").strip()
+    try:
+        severity = int(raw) if raw else _DEFAULT_LOG_SEVERITY
+    except ValueError:
+        severity = _DEFAULT_LOG_SEVERITY
+    severity = max(0, min(4, severity))
+    try:
+        import onnxruntime  # type: ignore
+
+        onnxruntime.set_default_logger_severity(severity)
+        _logs_quieted = True
+        logger.debug("ONNX Runtime default log severity=%s", severity)
+    except Exception:
+        logger.debug("Could not set ONNX Runtime log severity", exc_info=True)
+
+
 def ort_cuda_available() -> bool:
     """True when the Python onnxruntime reports a CUDA execution provider."""
     try:
@@ -229,6 +268,7 @@ def prepare_paddle_gpu_runtime() -> bool:
         return True
     preload_cuda_runtime()
     ensure_ort_dylib_path()
+    quiet_ort_logs()
     ready = ort_cuda_available()
     if ready:
         _cuda_ready = True

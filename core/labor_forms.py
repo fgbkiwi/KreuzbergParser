@@ -19,6 +19,8 @@ KIND_LABELS = {
     "cnh": "Carteira Nacional de Habilitação (CNH)",
     "identidade": "Documento de Identificação",
     "ctps": "Carteira de Trabalho (CTPS)",
+    "cct": "Convenção Coletiva de Trabalho (CCT)",
+    "act": "Acordo Coletivo de Trabalho (ACT)",
 }
 
 

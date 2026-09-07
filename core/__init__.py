@@ -5,7 +5,7 @@ from .kreuzberg_engine import KreuzbergOCREngine
 from .handwriting_detector import HandwritingDetector
 from .markdown_converter import MarkdownConverter
 from .form_templates import try_structured_extraction, ExtractionResult
-from .vlm_ocr import parse_page_image, vlm_available
+from .vlm_ocr import parse_page_image, reset_vlm_health, vlm_available
 from .page_classifier import (
     classify_page,
     classify_pdf_pages,
@@ -25,6 +25,7 @@ __all__ = [
     "try_structured_extraction",
     "ExtractionResult",
     "parse_page_image",
+    "reset_vlm_health",
     "vlm_available",
     "classify_page",
     "classify_pdf_pages",

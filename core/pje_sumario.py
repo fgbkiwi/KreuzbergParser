@@ -41,6 +41,15 @@ FORCE_IMAGE_OCR_TIPOS = (
     "documento de identificação",
     "carteira de trabalho e previdência social",
     "ctps",
+    # CCT/ACT: often vector-outline or scanned with a broken text layer. The
+    # classifier still skips OCR when residual Portuguese text is usable.
+    "convenção coletiva",
+    "convencao coletiva",
+    "trabalho (cct)",
+    "(cct)",
+    "acordo coletivo",
+    "trabalho (act)",
+    "(act)",
 )
 
 PETITION_TIPOS = (
@@ -384,6 +393,11 @@ def detect_doc_kind_from_text(text: str) -> Optional[str]:
     t = (text or "").lower()
     if not t.strip():
         return None
+    # CCT/ACT first: their clauses mention TRCT, recibo, identificação, etc.
+    if _looks_like_cct(t) or _looks_like_collective_clauses(t):
+        return "cct"
+    if _looks_like_act(t):
+        return "act"
     if "termo de homologação de rescisão" in t or (
         "termo de rescisão" in t and "contrato de trabalho" in t
     ) or re.search(r"\btrct\b", t):
@@ -406,6 +420,10 @@ def detect_doc_kind_from_text(text: str) -> Optional[str]:
         return "cnh"
     if "documento de identificação" in t or "carteira de identidade" in t:
         return "identidade"
+    if _looks_like_cct(t):
+        return "cct"
+    if _looks_like_act(t):
+        return "act"
     return None
 
 
@@ -431,7 +449,45 @@ def tipo_to_kind(tipo: str, titulo: str = "") -> Optional[str]:
         return "identidade"
     if "carteira de trabalho" in blob or re.search(r"\bctps\b", blob):
         return "ctps"
+    if _looks_like_cct(blob):
+        return "cct"
+    if _looks_like_act(blob):
+        return "act"
     return None
+
+
+def _looks_like_cct(text: str) -> bool:
+    t = text or ""
+    if re.search(r"conven[cçg][aãá]?o\s+coletiva", t):
+        return True
+    return bool(re.search(r"(?<![a-z0-9])cct(?![a-z0-9])", t))
+
+
+def _looks_like_act(text: str) -> bool:
+    t = text or ""
+    if "acordo coletivo de trabalho" in t or re.search(r"trabalho\s*\(act\)", t):
+        return True
+    return bool(
+        re.search(r"(?<![a-z0-9])act(?![a-z0-9])", t) and "coletivo" in t
+    )
+
+
+def _looks_like_collective_clauses(text: str) -> bool:
+    """True for multi-clause CCT/ACT pages (even without the cover title)."""
+    t = text or ""
+    if not re.search(r"cl[aá]usula", t):
+        return False
+    named_clause = re.search(
+        r"cl[aá]usula\s+(primeira|segunda|terceira|quarta|quinta|"
+        r"sexta|s[eé]tima|oitava|nona|d[eé]cima)",
+        t,
+    )
+    if named_clause or t.count("cláusula") + t.count("clausula") >= 2:
+        return True
+    return bool(
+        re.search(r"par[aá]grafo\s+(primeiro|segundo|terceiro|quarto|quinto|sexto)", t)
+        and re.search(r"sindicato|categoria|empregad|piso salarial|data-base", t)
+    )
 
 
 def load_sumario_for_pdf(

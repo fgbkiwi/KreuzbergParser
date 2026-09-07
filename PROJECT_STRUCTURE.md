@@ -45,6 +45,7 @@ KreuzbergParser/
 │   ├── probe_kreuzberg_cuda.py  # verifica PaddleOCR nativo na GPU
 │   ├── check_updates.py
 │   ├── compare_extraction.py
+│   ├── bench_paddle_gpu.py      # Tempo/qualidade por det_limit_type (ver GPU_SETUP.md)
 │   ├── setup_nemotron_venv.sh
 │   ├── start_nemotron_parse.sh
 │   └── install_cuda_toolkit.sh
@@ -145,7 +146,7 @@ KreuzbergParser/
 - Progress bar e log (flush limitado a ~0,3 s, últimas 200 linhas visíveis)
 - Estatísticas
 
-**Atualização da UI (Flet 0.86):** `page.update()` **não** pode ser chamado da thread de OCR. O handler Processar é `async`; o trabalho pesado vai em `asyncio.to_thread`; log/barra saltam para o loop da sessão (`utils/flet_ui.py`). Sem isso, a tela só refresca ao ganhar ou perder foco.
+**Atualização da UI (Flet 0.86):** `page.update()` **não** pode ser chamado da thread de OCR. A fila roda em thread de worker; log/barra saltam para o loop da sessão (`utils/flet_ui.py`). Sem isso, a tela só refresca ao ganhar ou perder foco.
 
 ### 7️⃣ utils/gpu_detector.py (75 linhas)
 **Propósito**: Detecção e validação de GPU
