@@ -2,6 +2,9 @@
 # Resolved conflict-free pins are written to requirements.txt.
 
 # Core OCR and Document Processing
+# kreuzberg: o pin resolve as dependências, mas a instalação real usa o wheel
+# GPU local (ort-dynamic) de vendor/wheels — ver scripts/build_kreuzberg_gpu.sh.
+# O wheel do PyPI embute ONNX Runtime só-CPU e não executa PaddleOCR em CUDA.
 kreuzberg
 pytesseract
 easyocr
@@ -13,15 +16,14 @@ pillow
 
 # Interface Gráfica
 flet
+flet-desktop
 
 # Utilities
 tqdm
 psutil
 python-dotenv
 
-# PaddleOCR GPU: Kreuzberg native (AccelerationConfig cuda) + onnxruntime-gpu
-# (ORT_DYLIB_PATH). Official paddleocr is the GPU fallback when Kreuzberg 4.10
-# ignores ORT_DYLIB_PATH (bundled CPU ORT). Do not install paddlepaddle-gpu or rapidocr.
-paddleocr>=3.7,<3.8
-numpy>=1.24,<2.4
+# PaddleOCR GPU: exclusivamente Kreuzberg nativo (AccelerationConfig cuda) com
+# wheel local ort-dynamic + onnxruntime-gpu (ORT_DYLIB_PATH aponta para a lib
+# CUDA do pacote). Sem fallbacks: não instale paddleocr, paddlepaddle ou rapidocr.
 onnxruntime-gpu>=1.27

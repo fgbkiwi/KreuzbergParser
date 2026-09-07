@@ -120,6 +120,12 @@ python main.py
 
 Se ainda não funcionar, verificar logs em `logs/` e se o Cursor está usando `.venv` (não `.venv-nemotron`).
 
+### ❌ Log e barra de progresso só mudam ao clicar na janela / Alt+Tab
+
+Isso é um bug clássico do Flet 0.86: `page.update()` feito fora do event loop da sessão não chega ao Flutter até o próximo evento da janela.
+
+O KreuzbergParser já corrige isso (`asyncio.to_thread` + `utils/flet_ui.py`). Se ainda ocorrer após atualizar o código, não chame `page.update()` de threads próprias; no Wayland, como fallback: `GDK_BACKEND=x11 .venv/bin/python main.py`.
+
 ## 5️⃣ Teste Rápido com PDF
 
 ### Criar PDF de Teste (opcional)

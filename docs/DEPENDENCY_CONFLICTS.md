@@ -10,7 +10,8 @@ Orientação atual de GPU: [`GPU_SETUP.md`](../GPU_SETUP.md).
 | Python | **3.12** (wheels CUDA; evitar ≥3.13 neste projeto) |
 | PyTorch | **2.13.0+cu130** |
 | GPU alvo | **NVIDIA GeForce RTX 5060 Ti 16 GB** (Blackwell `sm_120`) |
-| OpenCV | um único `cv2`: `opencv-contrib-python==4.10.0.84` (PaddleOCR GPU) |
+| OpenCV | um único `cv2` (`opencv-python-headless`) |
+| Kreuzberg | wheel local `ort-dynamic` em `vendor/wheels/` (`./scripts/build_kreuzberg_gpu.sh`) |
 
 ## Regras — não misturar
 
@@ -21,23 +22,23 @@ O wheel padrão no PyPI é **CPU** (`+cpu` ou sem `+cuXXX`). Se ele entrar no am
 - Resolver/instalar `torch` / `torchvision` **só** a partir do índice PyTorch CUDA.
 - Use o script `./scripts/update_deps.sh` (merge com constraints) em vez de `pip install torch` solto.
 
-### 2. Não misturar PaddlePaddle (framework) com o stack PyTorch
+### 2. Nenhum pacote Python do ecossistema Paddle no venv
 
-`paddlepaddle` / `paddlepaddle-gpu` e `rapidocr` competem por CUDA e **continuam proibidos**.
+`paddleocr`, `paddlex`, `paddlepaddle`, `paddlepaddle-gpu` e `rapidocr` são **proibidos**.
 
-O modo **PaddleOCR GPU** configura o Kreuzberg nativo (`AccelerationConfig(provider="cuda")` + `ORT_DYLIB_PATH` + `onnxruntime-gpu`). O wheel 4.10.2 empacota ORT só-CPU e ignora `ORT_DYLIB_PATH`; nesse caso o app usa `paddleocr` + `onnxruntime-gpu` (sem `paddlepaddle-gpu`). Se o CUDA não carregar, o modo **falha** — não cai para CPU.
+O modo **PaddleOCR GPU** usa exclusivamente o Kreuzberg nativo: wheel local compilado com `ort-dynamic` (`./scripts/build_kreuzberg_gpu.sh`) + `AccelerationConfig(provider="cuda")` + `ORT_DYLIB_PATH` apontando para a lib do `onnxruntime-gpu`. O wheel do PyPI empacota ORT só-CPU e ignora `ORT_DYLIB_PATH` — por isso a instalação real vem de `vendor/wheels/`. Se o CUDA não carregar, o modo **falha** — não há fallback.
 
 ```bash
-# Framework Paddle / RapidOCR (proibidos):
-uv pip uninstall paddlepaddle paddlepaddle-gpu rapidocr
+# Pacotes Paddle / RapidOCR (proibidos):
+uv pip uninstall paddleocr paddlex paddlepaddle paddlepaddle-gpu rapidocr
 ```
 
 ### 3. Um único pacote OpenCV (`cv2`)
 
 Vários wheels (`opencv-python`, `opencv-python-headless`, `opencv-contrib-python`) fornecem o módulo `cv2`. Ter dois no mesmo venv causa imports imprevisíveis.
 
-- Com PaddleOCR GPU: manter **`opencv-contrib-python==4.10.0.84`**
-- Evitar: `opencv-python` e `opencv-python-headless` em paralelo com o contrib
+- Manter apenas **`opencv-python-headless`** (dependência do EasyOCR)
+- Evitar: `opencv-python` (GUI) e variantes `contrib` em paralelo
 
 ### 4. Toolkit CUDA do sistema: só se for compilar kernels (vLLM / FlashInfer)
 
@@ -79,5 +80,9 @@ Ou via script (resolve + opcional sync):
 ./scripts/update_deps.sh --sync          # atualiza requirements.txt e instala
 ./scripts/update_deps.sh --check         # resolve em temp, compara, não grava
 ```
+
+O `--sync` reinstala automaticamente o wheel GPU local do Kreuzberg
+(`vendor/wheels/kreuzberg-*.whl`) por cima do wheel CPU do PyPI. Se o wheel
+não existir, gere-o com `./scripts/build_kreuzberg_gpu.sh`.
 
 Verificação periódica (aviso apenas, sem upgrade): `scripts/check_updates.py` — chamado de forma não bloqueante em `main.py`.

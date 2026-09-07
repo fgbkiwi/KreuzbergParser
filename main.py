@@ -81,6 +81,14 @@ def main():
     logger.info("")
     logger.info("🎯 Iniciando interface gráfica...")
 
+    # Flet auto-instala flet-desktop via `uv pip` se faltar. Com outro venv
+    # ativo (ex.: .venv-nemotron), o uv instala no lugar errado e o import
+    # no interpretador do .venv falha. Alinha VIRTUAL_ENV ao Python em uso.
+    import os
+
+    os.environ["VIRTUAL_ENV"] = str(Path(sys.prefix).resolve())
+    os.environ.pop("UV_PROJECT_ENVIRONMENT", None)
+
     # Launch Flet UI
     try:
         run_app()

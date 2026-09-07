@@ -169,12 +169,12 @@ venv_python = Path(sys.argv[3]) if len(sys.argv) > 3 else None
 req_re = re.compile(
     r"^(?P<name>[A-Za-z0-9_.-]+)\s*(?P<op>[<>=!~]=?|@)\s*(?P<ver>.+)$"
 )
+# PaddleOCR roda exclusivamente pelo Kreuzberg nativo (wheel local ort-dynamic);
+# nenhum pacote Python do ecossistema Paddle deve existir no ambiente.
 paddle_forbidden = {
     "paddlepaddle",
     "paddlepaddle-gpu",
     "rapidocr",
-}
-paddle_ocr_names = {
     "paddleocr",
     "paddlex",
 }
@@ -276,22 +276,21 @@ if cuda_tag != "cpu":
                     f"{label} {name}={ver} CUDA tag differs from expected +{cuda_tag}",
                 )
 
-# paddlepaddle / RapidOCR must not coexist with the PyTorch OCR stack.
-# Official paddleocr + paddlex (ONNX Runtime GPU) is the PaddleOCR GPU path.
 for name in sorted(paddle_forbidden):
     if name in pinned:
         emit(
             "FAIL",
-            f"requirements pin {name} — do not install paddlepaddle/rapidocr; "
-            "PaddleOCR GPU uses paddleocr + onnxruntime-gpu",
+            f"requirements pin {name} — PaddleOCR GPU usa somente o Kreuzberg "
+            "nativo (wheel ort-dynamic) + onnxruntime-gpu",
         )
     if name in installed:
         emit(
             "FAIL",
-            f"installed package {name} — uninstall; use paddleocr + onnxruntime-gpu",
+            f"installed package {name} — desinstale; PaddleOCR GPU usa somente "
+            "o Kreuzberg nativo + onnxruntime-gpu",
         )
 
-# OpenCV: exactly one cv2 provider. PaddleOCR needs opencv-contrib-python.
+# OpenCV: exactly one cv2 provider (opencv-python-headless, via easyocr).
 opencv_names = (
     "opencv-python",
     "opencv-python-headless",
@@ -311,14 +310,7 @@ if len(opencv_present) > 1:
         "multiple OpenCV packages provide cv2 "
         f"({', '.join(opencv_present)}) — keep only one",
     )
-uses_paddleocr = any(name in pinned or name in installed for name in paddle_ocr_names)
-if uses_paddleocr and "opencv-contrib-python" not in opencv_present:
-    emit(
-        "WARN",
-        "paddleocr/paddlex present without opencv-contrib-python "
-        "(ocr-core extra expects opencv-contrib-python==4.10.0.84)",
-    )
-elif not uses_paddleocr and "opencv-python" in opencv_present:
+if "opencv-python" in opencv_present:
     emit("WARN", "opencv-python (GUI) present — prefer opencv-python-headless")
 
 check_python_version(venv_python) if venv_python else None
@@ -619,6 +611,20 @@ if [[ "$DO_SYNC" -eq 1 ]]; then
   SYNC_ARGS+=(--extra-index-url "$INDEX_URL" --index-strategy unsafe-best-match)
   uv "${SYNC_ARGS[@]}"
   echo "==> Environment synced"
+
+  # PaddleOCR GPU: o sync instala o kreuzberg do PyPI (ONNX Runtime só-CPU).
+  # Reinstala por cima o wheel local ort-dynamic, que honra ORT_DYLIB_PATH e
+  # habilita CUDA no PaddleOCR nativo (ver scripts/build_kreuzberg_gpu.sh).
+  GPU_WHEEL="$(ls -1 "${ROOT}"/vendor/wheels/kreuzberg-*.whl 2>/dev/null | sort | tail -n 1 || true)"
+  if [[ -n "$GPU_WHEEL" ]]; then
+    echo "==> Reinstalando wheel GPU local do Kreuzberg: ${GPU_WHEEL##*/}"
+    uv pip install --quiet --python "${ROOT}/.venv/bin/python" \
+      --force-reinstall --no-deps "$GPU_WHEEL"
+  else
+    echo "WARN: vendor/wheels/kreuzberg-*.whl não encontrado."
+    echo "      O kreuzberg do PyPI NÃO roda PaddleOCR em CUDA."
+    echo "      Gere o wheel GPU com: ./scripts/build_kreuzberg_gpu.sh"
+  fi
 fi
 
 echo "==> Done"

@@ -2,7 +2,7 @@
 
 EasyOCR e TrOCR usam o **wheel CUDA do PyTorch**.  
 PaddleOCR **CPU** usa o backend nativo do Kreuzberg (`AccelerationConfig(provider="cpu")`).  
-PaddleOCR **GPU** segue a documentação do Kreuzberg: `AccelerationConfig(provider="cuda")` + `onnxruntime-gpu` + `ORT_DYLIB_PATH`. O wheel 4.10.2 ainda empacota ORT só-CPU (`ort-bundled`) e ignora `ORT_DYLIB_PATH`; nesse caso o app usa PaddleOCR oficial + CUDA (não cai para CPU).  
+PaddleOCR **GPU** segue a documentação do Kreuzberg: `AccelerationConfig(provider="cuda")` + `onnxruntime-gpu` + `ORT_DYLIB_PATH`, usando o wheel local compilado com `ort-dynamic` (`./scripts/build_kreuzberg_gpu.sh`). Sem fallbacks: se o CUDA nativo não inicializar, o modo falha com diagnóstico.  
 Conflitos: [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md).
 
 ## Current target (RTX 50 / Blackwell)
@@ -25,10 +25,9 @@ You do **not** need a system CUDA development toolkit for this app — the PyTor
 # From project root, with uv + Python 3.12 venv
 ./scripts/update_deps.sh --sync --cuda cu130
 
-# Or sync pinned requirements:
-uv pip sync requirements.txt \
-  --extra-index-url https://download.pytorch.org/whl/cu130 \
-  --index-strategy unsafe-best-match
+# Wheel Kreuzberg com ort-dynamic (PaddleOCR nativo em CUDA).
+# Necessário na primeira vez, ou se vendor/wheels/ estiver vazio.
+./scripts/build_kreuzberg_gpu.sh
 ```
 
 ## Verify
@@ -36,6 +35,7 @@ uv pip sync requirements.txt \
 ```bash
 nvidia-smi
 .venv/bin/python -c "import torch; print(torch.__version__); print('CUDA:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
+.venv/bin/python scripts/probe_kreuzberg_cuda.py
 ```
 
 Expect something like `2.13.0+cu130`, `CUDA: True`, and your RTX 50 GPU name.
@@ -44,8 +44,8 @@ Expect something like `2.13.0+cu130`, `CUDA: True`, and your RTX 50 GPU name.
 
 - **`+cpu` torch** — reinstall via the cu130 index / `update_deps.sh` (never mix PyPI CPU torch with CUDA).
 - **Python ≥ 3.13** — CUDA wheels often lag; recreate the venv on 3.12.
-- **PaddlePaddle / RapidOCR** — uninstall `paddlepaddle`, `paddlepaddle-gpu` and `rapidocr`. Do **not** mix them with PyTorch. Official `paddleocr` + `paddlex` is required for PaddleOCR GPU.
-- **OpenCV** — keep **one** `cv2`: with PaddleOCR GPU that is `opencv-contrib-python==4.10.0.84` (not `opencv-python-headless` in parallel).
+- **Paddle (qualquer pacote Python)** — uninstall `paddleocr`, `paddlex`, `paddlepaddle`, `paddlepaddle-gpu` e `rapidocr`. O PaddleOCR roda exclusivamente pelo Kreuzberg nativo; nenhum pacote Paddle deve existir no venv.
+- **OpenCV** — keep **one** `cv2` (`opencv-python-headless`).
 - **Sandbox / restricted env** — `torch.cuda` may fail inside Cursor sandbox while `nvidia-smi` works on the host; test outside the sandbox.
 
 ## PaddleOCR CPU (Kreuzberg)
@@ -72,7 +72,7 @@ python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 # Deve incluir CUDAExecutionProvider
 ```
 
-O Kreuzberg **4.10.2** é compilado com `ort-bundled`: log `ONNX Runtime is bundled; skipping system library discovery`. Pedir CUDA então falha com *CUDA execution provider requested but not available*. O app tenta o nativo primeiro; se recusar CUDA, usa PaddleOCR oficial + `onnxruntime-gpu` (GPU de verdade, não CPU). Não instale `paddlepaddle-gpu` nem `rapidocr`.
+**Importante:** o wheel do PyPI (4.10.2) é compilado com `ort-bundled` — linka um ONNX Runtime só-CPU embutido, ignora `ORT_DYLIB_PATH` e o crate `ort` descarta o registro do CUDA EP em tempo de compilação. Por isso este projeto usa um **wheel local compilado com `ort-dynamic`** (`./scripts/build_kreuzberg_gpu.sh`, salvo em `vendor/wheels/`), que carrega em runtime a lib do `onnxruntime-gpu` via `ORT_DYLIB_PATH` e executa o PaddleOCR nativo em CUDA de verdade. Sem esse wheel, o modo PaddleOCR GPU **falha na inicialização** (não há fallback). Não instale `paddleocr`, `paddlepaddle-gpu` nem `rapidocr`.
 
 Na RTX 5060 Ti (16 GB) o modo GPU usa `model_tier=server`, `padding=16`, lote de 8 páginas e `rec_batch_num=16`.
 

@@ -30,19 +30,26 @@ KreuzbergParser/
 │   ├── labor_forms.py           # Formatadores por tipo de doc
 │   ├── vlm_ocr.py               # Cliente OpenAI-compatível
 │   ├── handwriting_detector.py  # TrOCR opcional
-│   ├── paddle_gpu_ocr.py        # PaddleOCR oficial + CUDA (fallback GPU)
 │   └── markdown_converter.py
 │
-├── ui/app.py                    # Flet: modos, dropdown VLM
-├── utils/logger.py              # Log de sessão + auditoria por processo
+├── ui/app.py                    # Flet: modos, dropdown VLM, updates no loop
+├── utils/
+│   ├── logger.py                # Log de sessão + auditoria por processo
+│   ├── gpu_detector.py
+│   ├── flet_ui.py               # Marshaling thread-safe de page.update()
+│   └── ...
 │
 ├── scripts/
 │   ├── update_deps.sh
+│   ├── build_kreuzberg_gpu.sh   # wheel Kreuzberg ort-dynamic (CUDA)
+│   ├── probe_kreuzberg_cuda.py  # verifica PaddleOCR nativo na GPU
 │   ├── check_updates.py
 │   ├── compare_extraction.py
 │   ├── setup_nemotron_venv.sh
 │   ├── start_nemotron_parse.sh
 │   └── install_cuda_toolkit.sh
+│
+├── vendor/wheels/               # kreuzberg-*-ort-dynamic.whl
 │
 ├── logs/                        # {CNJ}_ocr_{modo}_{modelo}_*.log
 ├── tessdata/                    # por/eng (1ª execução)
@@ -129,15 +136,16 @@ KreuzbergParser/
 - Informações por página
 - UTF-8 encoding
 
-### 6️⃣ ui/app.py (350 linhas)
+### 6️⃣ ui/app.py
 **Propósito**: Interface gráfica Flet
 **Componentes**:
 - File pickers (PDF e pasta)
 - Radio buttons para modos
 - Checkboxes de opções
-- Progress bar
-- Log em tempo real
+- Progress bar e log (flush limitado a ~0,3 s, últimas 200 linhas visíveis)
 - Estatísticas
+
+**Atualização da UI (Flet 0.86):** `page.update()` **não** pode ser chamado da thread de OCR. O handler Processar é `async`; o trabalho pesado vai em `asyncio.to_thread`; log/barra saltam para o loop da sessão (`utils/flet_ui.py`). Sem isso, a tela só refresca ao ganhar ou perder foco.
 
 ### 7️⃣ utils/gpu_detector.py (75 linhas)
 **Propósito**: Detecção e validação de GPU
@@ -154,6 +162,11 @@ KreuzbergParser/
 - File handler
 - Formato configurável
 - UTF-8 encoding
+
+### 9️⃣ utils/flet_ui.py
+**Propósito**: Marshaling de patches Flet para o event loop da sessão
+**Por quê**: `FletSocketServer.send_message` usa `asyncio.Queue.put_nowait`, que não é thread-safe. `page.update()` fora do loop só chega ao Flutter no próximo evento da janela (foco/clique).
+**Uso**: `session_loop(page)`, `is_on_session_loop(page)`, `call_on_session_loop(...)`. Reutilizável em outros apps Flet 0.70+/0.86.
 
 ---
 
@@ -176,7 +189,9 @@ KreuzbergParser/
                    │
                    ├─────> Usuário escolhe modo
                    │
-                   ├─────> OCRApp.process_pdf()
+                   ├─────> OCRApp.process_pdf()  (asyncio.to_thread)
+                   │           │
+                   │           ├─────> progress/log → loop da sessão (flet_ui.py)
                    │           │
                    │           └─────> kreuzberg_engine.py
                    │                       │

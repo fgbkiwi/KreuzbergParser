@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import re
 import time
-import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -44,7 +43,7 @@ from core.pje_sumario import (
     load_sumario_for_pdf,
 )
 from utils.gpu_detector import gpu_detector
-from utils.logger import attach_process_log_file, log_page_end, log_page_start, log_visible_alert
+from utils.logger import attach_process_log_file, log_page_end, log_page_start
 from utils.pdf_pages import extract_pages_text, get_page_count, poppler_available
 from utils.poppler import ensure_poppler
 from utils.tessdata import ensure_tessdata
@@ -79,9 +78,6 @@ class KreuzbergOCREngine:
         self.config = config or Config()
         self.mode_config = self.config.get_mode_config(mode)
         self._handwriting_detector = None
-        self._paddle_gpu = None
-        self._paddle_native_cuda_error: Optional[BaseException] = None
-        self._paddle_gpu_fallback_lines: List[str] = []
         self._sumario = {}
         self._layouts = {}
         self.enable_template_extraction = bool(
@@ -175,7 +171,6 @@ class KreuzbergOCREngine:
         )
         logger.info("Processing PDF: %s (processo=%s)", pdf_path.name, processo)
         logger.info("Audit log: %s", log_path)
-        self._log_paddle_gpu_fallback_alert(etapa="início do processamento")
 
         if images_output_dir is None:
             images_dir = pdf_path.parent / f"{pdf_path.stem}_images"
@@ -324,24 +319,11 @@ class KreuzbergOCREngine:
                     "vlm_model": self.vlm_model,
                     "vlm_base_url": self.vlm_base_url,
                     "ocr_library": self._ocr_library(),
-                    "paddle_gpu_fallback": self._paddle_gpu is not None,
-                    "paddle_gpu_fallback_alert": self._paddle_gpu_fallback_text(),
-                    "paddle_native_cuda_error": (
-                        f"{type(self._paddle_native_cuda_error).__name__}: "
-                        f"{self._paddle_native_cuda_error}"
-                        if self._paddle_native_cuda_error
-                        else None
-                    ),
                 },
             }
         except Exception:
             logger.exception("Error processing PDF: %s", pdf_path.name)
             raise
-        finally:
-            self._log_paddle_gpu_fallback_alert(
-                etapa="fim do processamento",
-                include_traceback=True,
-            )
 
     # ------------------------------------------------------------------
     # Per-page processing
@@ -802,13 +784,6 @@ class KreuzbergOCREngine:
         mime_type: str = "image/png",
     ):
         """Run OCR on image bytes."""
-        if (
-            self._paddle_gpu is not None
-            and not force_tesseract
-            and self.mode == ProcessingMode.PADDLE_GPU
-        ):
-            return self._paddle_gpu.ocr_png_bytes(png_bytes)
-
         extraction_config, easyocr_kwargs = self._build_extraction_config(
             force_ocr=True,
             prefer_tables=prefer_tables or bool(form_kind in FORM_KINDS),
@@ -962,14 +937,12 @@ class KreuzbergOCREngine:
             return "kreuzberg+easyocr"
         if backend == "paddleocr":
             if self.mode == ProcessingMode.PADDLE_GPU:
-                if self._paddle_gpu is not None:
-                    return "paddleocr+onnxruntime+cuda"
                 return "kreuzberg+paddleocr+cuda"
             return "kreuzberg+paddleocr"
         return "kreuzberg+tesseract"
 
     def _init_paddle_gpu(self) -> None:
-        """Configure Kreuzberg native PaddleOCR CUDA; GPU is mandatory."""
+        """Ensure Kreuzberg native PaddleOCR runs on CUDA; GPU is mandatory."""
         from utils.ort_runtime import prepare_paddle_gpu_runtime
 
         if not prepare_paddle_gpu_runtime():
@@ -978,53 +951,19 @@ class KreuzbergOCREngine:
                 "Instale com: uv pip install onnxruntime-gpu>=1.27. "
                 "Este modo não cai para CPU."
             )
-        ok, probe_exc, probe_cfg = self._probe_kreuzberg_paddle_cuda()
+        ok, probe_exc = self._probe_kreuzberg_paddle_cuda()
         if ok:
             logger.info(
                 "Kreuzberg nativo aceitou PaddleOCR CUDA "
                 "(AccelerationConfig provider=cuda device_id=%s)",
                 self._cuda_device_id(),
             )
-            self._paddle_gpu = None
-            self._paddle_native_cuda_error = None
-            self._paddle_gpu_fallback_lines = []
             return
 
-        self._paddle_native_cuda_error = probe_exc
-        self._paddle_gpu_fallback_lines = self._build_paddle_native_cuda_refusal(
-            probe_exc, probe_cfg
-        )
-        logger.error(
-            "Kreuzberg nativo recusou CUDA no PaddleOCR: %s: %s",
-            type(probe_exc).__name__ if probe_exc else "Unknown",
-            probe_exc,
-            exc_info=probe_exc,
-        )
-        self._log_paddle_gpu_fallback_alert(etapa="inicialização do engine")
-        logger.warning(
-            "Ativando fallback GPU: PaddleOCR oficial + onnxruntime-gpu "
-            "(este modo NÃO cai para CPU)."
-        )
-        from core.paddle_gpu_ocr import OfficialPaddleGpuOcr
+        raise RuntimeError(self._paddle_native_cuda_error_text(probe_exc)) from probe_exc
 
-        language = self.config.BACKEND_LANGUAGE_MAP.get("paddleocr", {}).get(
-            self.mode_config.get("language", "por"),
-            "pt",
-        )
-        rec_batch = self._adaptive_rec_batch_num() or 16
-        det_limit = int(self.mode_config.get("det_limit_side_len") or 1920)
-        self._paddle_gpu = OfficialPaddleGpuOcr(
-            language=language,
-            rec_batch_size=rec_batch,
-            device_id=self._cuda_device_id(),
-            det_limit_side_len=det_limit,
-        )
-
-    def _probe_kreuzberg_paddle_cuda(
-        self,
-    ) -> tuple[bool, Optional[BaseException], Optional[object]]:
-        """True when Kreuzberg's bundled PaddleOCR accepts AccelerationConfig cuda."""
-        cfg = None
+    def _probe_kreuzberg_paddle_cuda(self) -> tuple[bool, Optional[BaseException]]:
+        """True when Kreuzberg's native PaddleOCR accepts AccelerationConfig cuda."""
         try:
             from io import BytesIO
 
@@ -1036,85 +975,29 @@ class KreuzbergOCREngine:
             img.save(buf, format="PNG")
             cfg, _kwargs = self._build_extraction_config(force_ocr=True)
             kreuzberg.extract_bytes_sync(buf.getvalue(), "image/png", config=cfg)
-            return True, None, cfg
+            return True, None
         except Exception as exc:
-            return False, exc, cfg
+            return False, exc
 
-    def _build_paddle_native_cuda_refusal(
-        self,
-        exc: Optional[BaseException],
-        probe_cfg,
-    ) -> List[str]:
+    def _paddle_native_cuda_error_text(self, exc: Optional[BaseException]) -> str:
         from utils.ort_runtime import ort_runtime_snapshot
 
         snap = ort_runtime_snapshot()
-        acc = getattr(probe_cfg, "acceleration", None) if probe_cfg is not None else None
-        ocr = getattr(probe_cfg, "ocr", None) if probe_cfg is not None else None
-        paddle = getattr(ocr, "paddle_ocr_config", None) if ocr is not None else None
         kreuzberg_ver = getattr(kreuzberg, "__version__", "desconhecida")
-        err_text = str(exc or "")
-        bundled_hint = (
-            "sim (mensagem típica do wheel com feature ort-bundled)"
-            if "not available in the loaded ONNX Runtime" in err_text
-            or "ORT_DYLIB_PATH" in err_text
-            else "indeterminado — ver traceback"
-        )
         lines = [
-            "ALERTA: Kreuzberg nativo recusou CUDA no PaddleOCR",
-            "O OCR desta sessão NÃO usou o backend nativo do Kreuzberg.",
-            "Fallback ativo: PaddleOCR oficial + onnxruntime-gpu (GPU de verdade, NÃO é CPU).",
-            "",
+            "PaddleOCR GPU recusado: o Kreuzberg nativo não aceitou CUDA.",
+            "Este modo não usa fallback — corrija o ambiente ou use PaddleOCR CPU.",
             f"Exceção: {type(exc).__name__ if exc else 'desconhecida'}: {exc}",
             f"Kreuzberg: {kreuzberg_ver}",
-            f"AccelerationConfig.provider: {getattr(acc, 'provider', '-')}",
-            f"AccelerationConfig.device_id: {getattr(acc, 'device_id', '-')}",
-            f"PaddleOcrConfig.model_tier: {getattr(paddle, 'model_tier', '-')}",
-            f"PaddleOcrConfig.padding: {getattr(paddle, 'padding', '-')}",
             f"Python onnxruntime-gpu: {snap.get('onnxruntime_version') or '-'}",
-            f"Python ORT providers: {snap.get('onnxruntime_providers') or '-'}",
+            f"ORT providers: {snap.get('onnxruntime_providers') or '-'}",
             f"ORT_DYLIB_PATH: {snap.get('ORT_DYLIB_PATH') or '-'}",
-            f"ORT capi: {snap.get('capi_dir') or '-'}",
-            f"ORT CUDA library: {snap.get('cuda_provider_library') or '-'}",
-            f"Plataforma: {snap.get('platform') or '-'}",
-            f"ORT empacotado no Kreuzberg (ort-bundled): {bundled_hint}",
-            "",
-            "O Python onnxruntime-gpu pode listar CUDAExecutionProvider e mesmo assim",
-            "o Kreuzberg recusar CUDA: o wheel 4.10.2 carrega o ORT só-CPU embutido",
-            "no pyd e ignora ORT_DYLIB_PATH (feature Rust ort-bundled).",
-            "",
-            "Documentação para pesquisar correção nativa:",
-            "  https://docs.kreuzberg.dev/getting-started/installation/#gpu-acceleration",
-            "  https://docs.kreuzberg.dev/reference/configuration/#provider-behavior",
-            "  https://docs.kreuzberg.dev/guides/ocr/#using-paddleocr",
-            "Termos úteis: ort-bundled, ORT_DYLIB_PATH, CUDAExecutionProvider,",
-            "  'CUDA execution provider requested but not available'.",
-            "",
-            "Caminhos possíveis: wheel Kreuzberg SEM ort-bundled; build local do",
-            "crate com ORT GPU; confirmar ORT_DYLIB_PATH ANTES de import kreuzberg.",
+            "Requisitos: wheel do Kreuzberg compilado com ort-dynamic "
+            "(scripts/build_kreuzberg_gpu.sh), onnxruntime-gpu instalado via uv "
+            "e ORT_DYLIB_PATH configurado antes de importar kreuzberg "
+            "(https://docs.kreuzberg.dev/reference/environment-variables/#ort_dylib_path).",
         ]
-        return lines
-
-    def _paddle_gpu_fallback_text(self) -> str:
-        if not self._paddle_gpu_fallback_lines:
-            return ""
-        return "\n".join(self._paddle_gpu_fallback_lines)
-
-    def _log_paddle_gpu_fallback_alert(
-        self, *, etapa: str, include_traceback: bool = False
-    ) -> None:
-        if not self._paddle_gpu_fallback_lines:
-            return
-        lines = [f"[{etapa}]"] + list(self._paddle_gpu_fallback_lines)
-        if include_traceback and self._paddle_native_cuda_error is not None:
-            tb = "".join(
-                traceback.format_exception(
-                    type(self._paddle_native_cuda_error),
-                    self._paddle_native_cuda_error,
-                    self._paddle_native_cuda_error.__traceback__,
-                )
-            ).rstrip()
-            lines.extend(["", "Traceback do probe nativo:", tb])
-        log_visible_alert(logger, lines)
+        return "\n".join(lines)
 
     def _cuda_device_id(self) -> int:
         try:
@@ -1318,8 +1201,6 @@ class KreuzbergOCREngine:
 
     def _can_batch_ocr(self, classifications: Sequence) -> bool:
         """True when Kreuzberg can OCR several rasters in one call."""
-        if self._paddle_gpu is not None:
-            return False
         return len(classifications) >= 2 and hasattr(
             kreuzberg, "batch_extract_bytes_sync"
         )

@@ -148,6 +148,8 @@ Preferido neste repo (Linux / macOS, uv + índice PyTorch cu130):
 
 ```bash
 ./scripts/update_deps.sh --sync --cuda cu130
+# PaddleOCR GPU nativo: wheel Kreuzberg com ort-dynamic
+./scripts/build_kreuzberg_gpu.sh
 ```
 
 > Regras para não misturar torch CPU, Paddle e vLLM no mesmo venv:
@@ -187,13 +189,14 @@ python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
 ---
 
-## 🧩 GPU Setup (EasyOCR + TrOCR + VLM)
+## 🧩 GPU Setup (EasyOCR + TrOCR + PaddleOCR GPU)
 
-Guia atual (RTX 50 / cu130, Nemotron, Ollama): **[`GPU_SETUP.md`](GPU_SETUP.md)**.
+Guia atual (RTX 50 / cu130, PaddleOCR nativo, Nemotron, Ollama): **[`GPU_SETUP.md`](GPU_SETUP.md)**.
 
-O modo GPU usa **EasyOCR + TrOCR** via PyTorch no `.venv`. Você precisa de:
+O modo **EasyOCR GPU** usa PyTorch no `.venv`. O modo **PaddleOCR GPU** usa o Kreuzberg nativo (`AccelerationConfig(provider="cuda")`) com o wheel local `ort-dynamic` e `onnxruntime-gpu` — sem fallback para o pacote Python `paddleocr`. Você precisa de:
 - Driver NVIDIA atualizado
 - PyTorch `+cu130` (Blackwell / `sm_120`)
+- `onnxruntime-gpu` e o wheel em `vendor/wheels/`
 
 ```bash
 ./scripts/update_deps.sh --sync --cuda cu130
@@ -326,8 +329,8 @@ KreuzbergParser/
 │   ├── handwriting_detector.py # TrOCR (opcional)
 │   └── markdown_converter.py   # Conversão para Markdown
 │
-├── ui/app.py                    # Interface Flet
-├── utils/                       # GPU, logging, tessdata, páginas PDF
+├── ui/app.py                    # Interface Flet (updates no loop da sessão)
+├── utils/                       # GPU, logging, tessdata, páginas PDF, flet_ui
 ├── scripts/
 │   ├── update_deps.sh
 │   ├── setup_nemotron_venv.sh
@@ -436,11 +439,21 @@ pip install kreuzberg
 2. Reinstalar Flet: `pip install --upgrade flet`
 3. Verificar logs em `logs/` (`{CNJ}_ocr_{modo}_{modelo}_AAAAMMDD_HHMMSS.log` após PROCESSAR PDF)
 
+### Problema: log e barra de progresso só atualizam ao ganhar/perder foco
+
+No Flet 0.86 desktop, `page.update()` de uma thread de trabalho enfileira o patch numa `asyncio.Queue` **não thread-safe**. O cliente Flutter só pinta quando um evento da janela (foco, clique) acorda o loop de envio.
+
+**Correção neste projeto:** o OCR corre em `asyncio.to_thread`; log, barra e estatísticas só chamam `page.update()` no event loop da sessão (`page.session.connection.loop`), via `utils/flet_ui.py`. Não chame `page.update()` de `threading.Thread` / `threading.Timer`.
+
+Se, no Pop!_OS/Wayland, a janela ainda atrasar frames depois disso, teste `GDK_BACKEND=x11 .venv/bin/python main.py` (XWayland).
+
 ---
 
 ## 📚 Documentação Adicional
 
+- **[QUICKSTART.md](QUICKSTART.md)** - Instalação e primeiro uso
 - **[GPU_SETUP.md](GPU_SETUP.md)** - RTX 50 / cu130, Ollama, Nemotron Parse
+- **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** - Arquivos, fluxo e UI Flet (`utils/flet_ui.py`)
 - **[docs/DEPENDENCY_CONFLICTS.md](docs/DEPENDENCY_CONFLICTS.md)** - o que não misturar nos venvs
 - **[Kreuzberg Docs](https://docs.kreuzberg.dev/)** - Documentação oficial
 - **[Flet Docs](https://flet.dev/)** - Framework UI

@@ -2,6 +2,7 @@
 Flet-based User Interface for Intelligent OCR System
 Simplified with Kreuzberg integration
 """
+import asyncio
 import flet as ft
 from pathlib import Path
 import logging
@@ -10,11 +11,14 @@ import threading
 
 from config import Config, ProcessingMode, is_gpu_mode
 from utils.gpu_detector import gpu_detector
-from utils.logger import log_visible_alert
+from utils.flet_ui import is_on_session_loop, session_loop
 from core.kreuzberg_engine import KreuzbergOCREngine
 from core.markdown_converter import MarkdownConverter
 
 logger = logging.getLogger(__name__)
+
+_UI_FLUSH_INTERVAL_S = 0.3
+_MAX_VISIBLE_LOG_LINES = 200
 
 
 class OCRApp:
@@ -23,12 +27,19 @@ class OCRApp:
     def __init__(self, page: ft.Page):
         self.page = page
         self.config = Config()
+        self._loop = session_loop(page)
 
         # State
         self.pdf_path = None
         self.output_folder = None
         self.selected_mode = self._default_processing_mode()
         self.is_processing = False
+        self._log_lines: list[str] = []
+        self._log_lock = threading.Lock()
+        self._pending_progress: tuple[float, str] | None = None
+        self._pending_stats: str | None = None
+        self._last_ui_flush = 0.0
+        self._flush_handle: asyncio.TimerHandle | None = None
 
         # GPU info
         self.gpu_info = gpu_detector.get_gpu_info()
@@ -421,7 +432,7 @@ class OCRApp:
             self.pdf_path = files[0].path
             self.pdf_path_field.value = self.pdf_path
             self._update_process_button()
-            self.page.update()
+            self._patch_page()
 
     async def handle_pick_folder(self, e):
         path = await self.folder_picker.get_directory_path()
@@ -429,14 +440,15 @@ class OCRApp:
             self.output_folder = path
             self.output_folder_field.value = self.output_folder
             self._update_process_button()
-            self.page.update()
+            self._patch_page()
 
-    def on_save_log_clicked(self, e):
+    async def on_save_log_clicked(self, e):
         if not self.output_folder:
             self.log_message("❌ Pasta de destino nao selecionada", ft.Colors.RED)
             return
 
-        log_text = self.log_field.value.strip()
+        with self._log_lock:
+            log_text = "\n".join(self._log_lines).strip()
         if not log_text:
             self.log_message("⚠️ Log vazio. Nada para salvar.", ft.Colors.ORANGE)
             return
@@ -452,7 +464,7 @@ class OCRApp:
             logger.exception("Error saving log")
             self.log_message(f"❌ Erro ao salvar log: {exc}", ft.Colors.RED)
 
-    def on_vlm_backend_changed(self, e):
+    async def on_vlm_backend_changed(self, e):
         preset = self.config.vlm_preset(self.vlm_dropdown.value)
         if preset["key"] == "off":
             self.log_message("VLM fallback desligado (só templates).", ft.Colors.BLUE_700)
@@ -463,7 +475,7 @@ class OCRApp:
             ft.Colors.BLUE_700,
         )
 
-    def on_mode_changed(self, e):
+    async def on_mode_changed(self, e):
         raw = getattr(e.control, "value", None) or e.control.value
         try:
             self.selected_mode = ProcessingMode(raw)
@@ -471,17 +483,20 @@ class OCRApp:
             self.selected_mode = ProcessingMode.CPU
 
         if is_gpu_mode(self.selected_mode) and not self.gpu_info["available"]:
-            fallback = (
-                ProcessingMode.PADDLE_CPU
-                if self.selected_mode == ProcessingMode.PADDLE_GPU
-                else ProcessingMode.CPU
-            )
+            if self.selected_mode == ProcessingMode.PADDLE_GPU:
+                self.log_message(
+                    "PaddleOCR GPU recusado: nenhuma GPU NVIDIA detectada. "
+                    "Este modo não cai para CPU — escolha PaddleOCR CPU ou "
+                    "corrija o driver NVIDIA.",
+                    ft.Colors.RED,
+                )
+                return
             self.log_message(
-                f"⚠️ GPU não disponível. Usando modo {fallback.value}.",
+                "⚠️ GPU não disponível. Usando modo CPU (EasyOCR).",
                 ft.Colors.ORANGE,
             )
-            self.selected_mode = fallback
-            self.mode_radio.value = fallback.value
+            self.selected_mode = ProcessingMode.CPU
+            self.mode_radio.value = ProcessingMode.CPU.value
 
         if not is_gpu_mode(self.selected_mode):
             self.enable_handwriting_check.value = False
@@ -489,7 +504,7 @@ class OCRApp:
         else:
             self.enable_handwriting_check.disabled = False
 
-        self.page.update()
+        self._patch_page()
 
     def _update_process_button(self):
         self.process_button.disabled = not (self.pdf_path and self.output_folder)
@@ -533,7 +548,7 @@ class OCRApp:
             return f"{status}{subtype_bit} ({library}, {device}{src_bit}{dur})"
         return f"tipo={page_type}"
 
-    def on_process_clicked(self, e):
+    async def on_process_clicked(self, e):
         if self.is_processing:
             return
 
@@ -550,11 +565,19 @@ class OCRApp:
         self.progress_bar.visible = True
         self.progress_bar.value = 0
         self.progress_text.value = "Classificando páginas e iniciando OCR..."
+        with self._log_lock:
+            self._log_lines.clear()
         self.log_field.value = ""
-        self.page.update()
+        self._pending_progress = (0, self.progress_text.value)
+        self._pending_stats = None
+        self._patch_page()
 
-        thread = threading.Thread(target=self.process_pdf, daemon=True)
-        thread.start()
+        try:
+            await asyncio.to_thread(self.process_pdf)
+        finally:
+            self.is_processing = False
+            self.process_button.disabled = False
+            self._flush_ui_on_loop(True)
 
     def process_pdf(self):
         pdf_path = self.pdf_path
@@ -586,12 +609,6 @@ class OCRApp:
             )
 
             engine = KreuzbergOCREngine(self.selected_mode, self.config)
-            if engine._paddle_gpu_fallback_text():
-                self.log_message(
-                    "⚠️ Kreuzberg nativo recusou CUDA — OCR via PaddleOCR "
-                    "oficial na GPU (não é CPU). Detalhes no final do log.",
-                    ft.Colors.ORANGE_900,
-                )
             images_dir = Path(output_folder) / f"{Path(pdf_path).stem}_images"
 
             def on_page_progress(current: int, total: int, page_data: dict):
@@ -651,56 +668,86 @@ class OCRApp:
             self.update_stats(stats_text)
             self.update_progress(1.0, "✅ Concluido!")
 
-            self._emit_paddle_gpu_fallback_alert(
-                result.get("metadata", {}).get("paddle_gpu_fallback_alert"),
-                audit_log=audit_log,
-            )
-
         except Exception as e:
             logger.exception("Error processing PDF")
             self.log_message(f"❌ Erro: {str(e)}", ft.Colors.RED)
             self.update_progress(0, "❌ Erro no processamento")
-            if engine is not None:
-                self._emit_paddle_gpu_fallback_alert(
-                    engine._paddle_gpu_fallback_text()
-                )
 
         finally:
-            self.is_processing = False
-            self.process_button.disabled = False
-            self.page.update()
-
-    def _emit_paddle_gpu_fallback_alert(self, alert, *, audit_log=None) -> None:
-        if not alert:
-            return
-        border = "!" * 78
-        self.log_message(f"\n{border}\n{alert}\n{border}", ft.Colors.ORANGE_900)
-        if audit_log:
-            self.log_message(
-                f"Traceback completo do probe nativo: {audit_log}",
-                ft.Colors.ORANGE_900,
-            )
-        log_visible_alert(
-            logger,
-            ["[fim da sessão]"] + str(alert).splitlines(),
-        )
+            self._schedule_ui_flush(force=True)
 
     def log_message(self, message: str, color=None):
-        current = self.log_field.value or ""
-        if current:
-            self.log_field.value = f"{current}\n{message}"
-        else:
-            self.log_field.value = message
-        self.page.update()
+        with self._log_lock:
+            self._log_lines.append(message)
+        self._schedule_ui_flush()
 
     def update_progress(self, value: float, text: str):
-        self.progress_bar.value = value
-        self.progress_text.value = text
-        self.page.update()
+        self._pending_progress = (value, text)
+        self._schedule_ui_flush()
 
     def update_stats(self, text: str):
-        self.stats_field.value = text
-        self.page.update()
+        self._pending_stats = text
+        self._schedule_ui_flush()
+
+    def _patch_page(self, *controls: ft.Control) -> None:
+        """Send a patch on the session loop so the Flutter client actually paints."""
+        if not is_on_session_loop(self.page):
+            self._loop.call_soon_threadsafe(self._patch_page, *controls)
+            return
+        try:
+            if controls:
+                self.page.update(*controls)
+            else:
+                self.page.update()
+        except Exception:
+            logger.debug("Flet page patch failed", exc_info=True)
+
+    def _schedule_ui_flush(self, force: bool = False) -> None:
+        if force:
+            if is_on_session_loop(self.page):
+                self._flush_ui_on_loop(True)
+                return
+            self._loop.call_soon_threadsafe(self._flush_ui_on_loop, True)
+            return
+        self._loop.call_soon_threadsafe(self._arm_flush_on_loop)
+
+    def _arm_flush_on_loop(self) -> None:
+        if self._flush_handle is not None:
+            return
+        wait = _UI_FLUSH_INTERVAL_S - (time.monotonic() - self._last_ui_flush)
+        if wait <= 0:
+            self._flush_ui_on_loop(False)
+            return
+        self._flush_handle = self._loop.call_later(
+            wait, self._flush_ui_on_loop, False
+        )
+
+    def _flush_ui_on_loop(self, force: bool = False) -> None:
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        self._last_ui_flush = time.monotonic()
+
+        with self._log_lock:
+            lines = list(self._log_lines)
+        pending_progress = self._pending_progress
+        pending_stats = self._pending_stats
+        self._pending_stats = None
+
+        visible = lines[-_MAX_VISIBLE_LOG_LINES:]
+        self.log_field.value = "\n".join(visible)
+        controls: list[ft.Control] = [self.log_field]
+        if pending_progress is not None:
+            self.progress_bar.value = pending_progress[0]
+            self.progress_text.value = pending_progress[1]
+            controls.extend([self.progress_bar, self.progress_text])
+        if pending_stats is not None:
+            self.stats_field.value = pending_stats
+            controls.append(self.stats_field)
+        if force:
+            controls.append(self.process_button)
+
+        self._patch_page(*controls)
 
 
 def run_app():

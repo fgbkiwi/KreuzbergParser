@@ -176,15 +176,6 @@ def ort_cuda_available() -> bool:
         return False
 
 
-def session_uses_cuda(session: Any) -> bool:
-    """True when an InferenceSession is actually bound to CUDA (not CPU fallback)."""
-    try:
-        providers = [str(p) for p in session.get_providers()]
-    except Exception:
-        return False
-    return bool(providers) and providers[0] == _CUDA_PROVIDER
-
-
 def ensure_ort_dylib_path() -> bool:
     """
     Point ORT_DYLIB_PATH at the GPU ONNX Runtime shared library.
