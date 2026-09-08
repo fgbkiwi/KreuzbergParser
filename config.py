@@ -3,6 +3,7 @@ Simplified configuration using Kreuzberg
 90% reduction in configuration complexity
 """
 import os
+import sys
 from pathlib import Path
 from enum import Enum
 
@@ -28,6 +29,47 @@ def is_paddle_mode(mode) -> bool:
         ProcessingMode.PADDLE_GPU.value,
         ProcessingMode.PADDLE_CPU.value,
     )
+
+
+def paddle_gpu_supported_on_platform() -> bool:
+    """Native Kreuzberg PaddleOCR CUDA needs the ort-dynamic wheel (Linux today)."""
+    return sys.platform != "win32"
+
+
+def processing_mode_availability(
+    mode,
+    *,
+    gpu_suitable: bool,
+) -> tuple[bool, str]:
+    """Return (available, reason) for a processing mode on this machine."""
+    if not isinstance(mode, ProcessingMode):
+        try:
+            mode = ProcessingMode(mode)
+        except ValueError:
+            return False, "modo desconhecido"
+
+    if mode == ProcessingMode.PADDLE_GPU:
+        if not paddle_gpu_supported_on_platform():
+            return (
+                False,
+                "PaddleOCR GPU nativo indisponível no Windows "
+                "(wheel ort-dynamic só no Linux) — use EasyOCR GPU",
+            )
+        if not gpu_suitable:
+            return False, "GPU NVIDIA adequada não detectada"
+        return True, ""
+
+    if mode == ProcessingMode.GPU:
+        if not gpu_suitable:
+            return False, "GPU NVIDIA adequada não detectada"
+        return True, ""
+
+    return True, ""
+
+
+def is_processing_mode_available(mode, *, gpu_suitable: bool) -> bool:
+    ok, _ = processing_mode_availability(mode, gpu_suitable=gpu_suitable)
+    return ok
 
 
 def _package_dir() -> Path:
@@ -303,7 +345,7 @@ class Config:
     # ===== UI SETTINGS =====
     WINDOW_WIDTH = 1140
     WINDOW_HEIGHT = 920
-    MODE_OPTIONS_PANEL_HEIGHT = 188
+    MODE_OPTIONS_PANEL_HEIGHT = 200
     WINDOW_TITLE = "OCR Inteligente para PDFs Judiciais (Powered by Kreuzberg)"
     THEME_MODE = "light"
     

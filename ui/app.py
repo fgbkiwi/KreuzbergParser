@@ -9,7 +9,14 @@ import logging
 import time
 import threading
 
-from config import Config, ProcessingMode, is_gpu_mode
+from config import (
+    Config,
+    ProcessingMode,
+    is_gpu_mode,
+    is_processing_mode_available,
+    paddle_gpu_supported_on_platform,
+    processing_mode_availability,
+)
 from utils.gpu_detector import gpu_detector
 from utils.flet_ui import is_on_session_loop, session_loop
 from utils.logger import detach_process_log_file, log_visible_alert
@@ -30,6 +37,18 @@ class OCRApp:
         self.config = Config()
         self._loop = session_loop(page)
 
+        # GPU info (before default mode / radios)
+        self.gpu_info = gpu_detector.get_gpu_info()
+        self.gpu_suitable, self.gpu_suitable_message = gpu_detector.is_gpu_suitable(
+            self.config.MIN_VRAM_GB
+        )
+        logger.info("GPU Status: %s", self.gpu_info["message"])
+        if not paddle_gpu_supported_on_platform():
+            logger.info(
+                "PaddleOCR GPU desabilitado nesta plataforma "
+                "(ort-dynamic indisponível no Windows)."
+            )
+
         # State
         self.pdf_queue: list[str] = []
         self.output_folder = None
@@ -44,19 +63,41 @@ class OCRApp:
         self._last_ui_flush = 0.0
         self._flush_handle: asyncio.TimerHandle | None = None
 
-        # GPU info
-        self.gpu_info = gpu_detector.get_gpu_info()
-        logger.info("GPU Status: %s", self.gpu_info["message"])
-
         # Setup UI
         self.setup_ui()
 
     def _default_processing_mode(self) -> ProcessingMode:
-        """GPU when suitable, otherwise CPU (not EXPRESS)."""
-        is_suitable, _ = gpu_detector.is_gpu_suitable(self.config.MIN_VRAM_GB)
-        if is_suitable:
+        """Prefer EasyOCR GPU when suitable; never pick unavailable modes."""
+        if is_processing_mode_available(
+            ProcessingMode.GPU, gpu_suitable=self._gpu_suitable_flag()
+        ):
             return ProcessingMode.GPU
         return ProcessingMode.CPU
+
+    def _gpu_suitable_flag(self) -> bool:
+        if hasattr(self, "gpu_suitable"):
+            return bool(self.gpu_suitable)
+        is_suitable, _ = gpu_detector.is_gpu_suitable(self.config.MIN_VRAM_GB)
+        return is_suitable
+
+    def _mode_is_available(self, mode: ProcessingMode) -> bool:
+        return is_processing_mode_available(
+            mode, gpu_suitable=self._gpu_suitable_flag()
+        )
+
+    def _mode_unavailable_reason(self, mode: ProcessingMode) -> str:
+        _, reason = processing_mode_availability(
+            mode, gpu_suitable=self._gpu_suitable_flag()
+        )
+        return reason
+
+    def _mode_label(self, mode: ProcessingMode, base: str) -> str:
+        if self._mode_is_available(mode):
+            return base
+        if mode == ProcessingMode.PADDLE_GPU and not paddle_gpu_supported_on_platform():
+            # Keep short: two-column layout clips long suffixes.
+            return f"{base} (só Linux)"
+        return f"{base} (sem GPU)"
 
     def setup_ui(self):
         """Configure Flet interface"""
@@ -100,10 +141,16 @@ class OCRApp:
         handwriting_disabled = not is_gpu_mode(self.selected_mode)
 
         def _mode_radio(value: ProcessingMode, label: str) -> ft.Container:
+            available = self._mode_is_available(value)
+            reason = self._mode_unavailable_reason(value)
             return ft.Container(
-                height=32,
                 alignment=ft.Alignment.CENTER_LEFT,
-                content=ft.Radio(value=value.value, label=label),
+                tooltip=reason if not available else None,
+                content=ft.Radio(
+                    value=value.value,
+                    label=self._mode_label(value, label),
+                    disabled=not available,
+                ),
             )
 
         self.mode_radio = ft.RadioGroup(
@@ -124,8 +171,9 @@ class OCRApp:
                                 "🚀 GPU - EasyOCR CUDA",
                             ),
                         ],
-                        spacing=6,
+                        spacing=4,
                         tight=True,
+                        expand=True,
                     ),
                     ft.Column(
                         [
@@ -138,12 +186,14 @@ class OCRApp:
                                 "🚀 PaddleOCR GPU - 300 DPI",
                             ),
                         ],
-                        spacing=6,
+                        spacing=4,
                         tight=True,
+                        expand=True,
                     ),
                 ],
-                spacing=16,
+                spacing=12,
                 vertical_alignment=ft.CrossAxisAlignment.START,
+                expand=True,
             ),
             value=self.selected_mode.value,
             on_change=self.on_mode_changed,
@@ -169,9 +219,12 @@ class OCRApp:
         )
 
         gpu_status_text = self._get_gpu_status_text()
-        gpu_color = (
-            ft.Colors.GREEN if self.gpu_info["available"] else ft.Colors.ORANGE
-        )
+        if self.gpu_suitable:
+            gpu_color = ft.Colors.GREEN
+        elif self.gpu_info["available"]:
+            gpu_color = ft.Colors.ORANGE
+        else:
+            gpu_color = ft.Colors.ORANGE
         self.gpu_status = ft.Text(gpu_status_text, size=12, color=gpu_color)
 
         self.progress_bar = ft.ProgressBar(expand=True, visible=False)
@@ -424,13 +477,18 @@ class OCRApp:
         )
 
     def _get_gpu_status_text(self) -> str:
-        if self.gpu_info["available"]:
-            return (
+        if self.gpu_info["available"] and self.gpu_suitable:
+            base = (
                 f"✅ {self.gpu_info['name']} "
                 f"(cuda:{self.gpu_info.get('device_id', 0)}, "
                 f"{self.gpu_info['vram_gb']}GB VRAM)"
             )
-        return "❌ GPU não detectada - Modo GPU indisponível"
+            if not paddle_gpu_supported_on_platform():
+                return f"{base} — PaddleOCR GPU indisponível no Windows"
+            return base
+        if self.gpu_info["available"] and not self.gpu_suitable:
+            return f"⚠️ {self.gpu_suitable_message} — modos GPU desabilitados"
+        return "❌ GPU não detectada — modos GPU desabilitados"
 
     def _resolve_theme_mode(self, value):
         if isinstance(value, str):
@@ -570,14 +628,15 @@ class OCRApp:
         except ValueError:
             self.selected_mode = ProcessingMode.CPU
 
-        if is_gpu_mode(self.selected_mode) and not self.gpu_info["available"]:
+        if not self._mode_is_available(self.selected_mode):
+            reason = self._mode_unavailable_reason(self.selected_mode)
             fallback = (
                 ProcessingMode.PADDLE_CPU
                 if self.selected_mode == ProcessingMode.PADDLE_GPU
                 else ProcessingMode.CPU
             )
             self.log_message(
-                f"⚠️ GPU não disponível. Usando modo {fallback.value}.",
+                f"⚠️ Modo indisponível ({reason}). Usando {fallback.value}.",
                 ft.Colors.ORANGE,
             )
             self.selected_mode = fallback
@@ -662,6 +721,14 @@ class OCRApp:
 
         if not self.output_folder:
             self.log_message("❌ Pasta de destino não selecionada", ft.Colors.RED)
+            return
+
+        if not self._mode_is_available(self.selected_mode):
+            reason = self._mode_unavailable_reason(self.selected_mode)
+            self.log_message(
+                f"❌ Modo {self.selected_mode.value} indisponível: {reason}",
+                ft.Colors.RED,
+            )
             return
 
         self.is_processing = True

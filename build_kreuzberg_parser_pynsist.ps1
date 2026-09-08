@@ -14,6 +14,8 @@
 #   .\build_kreuzberg_parser_pynsist.ps1 minor           # minor + publica Release
 #   .\build_kreuzberg_parser_pynsist.ps1 major           # major + publica Release
 #   .\build_kreuzberg_parser_pynsist.ps1 -NoPublish      # so gera o .exe (sem Release)
+#   .\build_kreuzberg_parser_pynsist.ps1 -NoBump         # build com versao atual (sem bump)
+#   .\build_kreuzberg_parser_pynsist.ps1 -NoBump -NoPublish
 #   .\build_kreuzberg_parser_pynsist.ps1 minor -NoPublish
 # ============================================================
 
@@ -22,7 +24,10 @@ param(
     [string]$Bump = "patch",
 
     # Escape hatch: builds de teste sem criar Release no GitHub
-    [switch]$NoPublish
+    [switch]$NoPublish,
+
+    # Reutiliza APP_VERSION atual sem incrementar
+    [switch]$NoBump
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,7 +51,7 @@ if (-not (Test-Path $PYTHON_EXE)) {
     exit 1
 }
 
-if (-not (Test-Path $BUMP_SCRIPT)) {
+if (-not $NoBump -and -not (Test-Path $BUMP_SCRIPT)) {
     Write-Error "Script de bump nao encontrado: '$BUMP_SCRIPT'."
     exit 1
 }
@@ -68,22 +73,33 @@ if (-not $NoPublish) {
     }
 }
 
-# --- Bump de versao (fonte unica: APP_VERSION em main.py) ----------------
-Write-Host "`n[0/4] Incrementando versao ($Bump)..." -ForegroundColor Cyan
-$bumpOutput = & $PYTHON_EXE $BUMP_SCRIPT $Bump 2>&1
-$bumpExit = $LASTEXITCODE
-$bumpOutput | ForEach-Object { Write-Host $_ }
-if ($bumpExit -ne 0) {
-    Write-Error "Falha ao incrementar a versao (exit code $bumpExit)."
-    exit 1
+# --- Versao (fonte unica: APP_VERSION em main.py) ------------------------
+if ($NoBump) {
+    Write-Host "`n[0/4] Mantendo versao atual (-NoBump)..." -ForegroundColor Cyan
+    $mainSource = Get-Content -Raw -Path (Join-Path $ScriptDir "main.py")
+    if ($mainSource -notmatch 'APP_VERSION\s*=\s*["''](\d+\.\d+\.\d+)["'']') {
+        Write-Error "Nao foi possivel ler APP_VERSION de main.py."
+        exit 1
+    }
+    $VERSION = $Matches[1]
+    Write-Host "Versao (sem bump): $VERSION" -ForegroundColor Green
+} else {
+    Write-Host "`n[0/4] Incrementando versao ($Bump)..." -ForegroundColor Cyan
+    $bumpOutput = & $PYTHON_EXE $BUMP_SCRIPT $Bump 2>&1
+    $bumpExit = $LASTEXITCODE
+    $bumpOutput | ForEach-Object { Write-Host $_ }
+    if ($bumpExit -ne 0) {
+        Write-Error "Falha ao incrementar a versao (exit code $bumpExit)."
+        exit 1
+    }
+    $VERSION = ($bumpOutput | Where-Object { $_ -match '^\d+\.\d+\.\d+$' } | Select-Object -Last 1)
+    if (-not $VERSION) {
+        Write-Error "bump_version.py nao retornou a nova versao em stdout."
+        exit 1
+    }
+    $VERSION = $VERSION.ToString().Trim()
+    Write-Host "Nova versao: $VERSION" -ForegroundColor Green
 }
-$VERSION = ($bumpOutput | Where-Object { $_ -match '^\d+\.\d+\.\d+$' } | Select-Object -Last 1)
-if (-not $VERSION) {
-    Write-Error "bump_version.py nao retornou a nova versao em stdout."
-    exit 1
-}
-$VERSION = $VERSION.ToString().Trim()
-Write-Host "Nova versao: $VERSION" -ForegroundColor Green
 
 $INSTALLER = Join-Path $ScriptDir "build\nsis\${APP_NAME}_${VERSION}.exe"
 $TAG = "v$VERSION"
@@ -209,7 +225,9 @@ Poppler e tessdata sao baixados na primeira execucao.
 
     $releaseUrl = "https://github.com/$GITHUB_REPO/releases/tag/$TAG"
     Write-Host "Release publicada: $releaseUrl" -ForegroundColor Green
-    Write-Host "Lembre-se de fazer commit/push do bump de versao ($VERSION) se ainda nao estiver no remoto." -ForegroundColor Yellow
+    if (-not $NoBump) {
+        Write-Host "Lembre-se de fazer commit/push do bump de versao ($VERSION) se ainda nao estiver no remoto." -ForegroundColor Yellow
+    }
 }
 
 Write-Host "`nBuild concluido!" -ForegroundColor Green

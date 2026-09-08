@@ -178,6 +178,8 @@ if ($LASTEXITCODE -ne 0) {
 Remove-ForbiddenPackages
 
 # OpenCV: keep only opencv-python-headless (EasyOCR); no contrib / GUI wheels.
+# Force reinstall — a partial uninstall can leave a broken namespace-style cv2/
+# folder (stubs + ffmpeg DLL only), which breaks both runtime and Pynsist.
 Write-Step "Normalizing OpenCV providers (keep opencv-python-headless)"
 $opencvExtras = @(
     "opencv-python",
@@ -185,9 +187,21 @@ $opencvExtras = @(
     "opencv-contrib-python-headless"
 )
 uv pip uninstall @opencvExtras --python $PythonExe 2>$null | Out-Null
-uv pip install "opencv-python-headless" --python $PythonExe
+$cv2Dir = Join-Path $Root ".venv\Lib\site-packages\cv2"
+if (Test-Path $cv2Dir) {
+    $hasInit = Test-Path (Join-Path $cv2Dir "__init__.py")
+    if (-not $hasInit) {
+        Write-Host "  Removing broken leftover cv2/ (namespace stubs)" -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $cv2Dir
+    }
+}
+uv pip install --reinstall "opencv-python-headless" --python $PythonExe
 if ($LASTEXITCODE -ne 0) {
     Die "failed to install opencv-python-headless"
+}
+& $PythonExe -c "import cv2; assert hasattr(cv2, 'imread'), 'cv2 is broken'; print('OpenCV', cv2.__version__)"
+if ($LASTEXITCODE -ne 0) {
+    Die "opencv-python-headless installed but import cv2 is unusable"
 }
 
 $rc = Invoke-ConflictCheck

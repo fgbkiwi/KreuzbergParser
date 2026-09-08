@@ -289,6 +289,7 @@ Para mantenedores (NSIS + `gh` autenticado se for publicar):
 ```powershell
 .\scripts\update_deps.ps1 -Sync
 .\build_kreuzberg_parser_pynsist.ps1 -NoPublish   # gera build\nsis\KreuzbergParser_x.y.z.exe
+.\build_kreuzberg_parser_pynsist.ps1 -NoBump      # build com versao atual (sem bump)
 .\build_kreuzberg_parser_pynsist.ps1              # bump patch + build + Release
 .\build_kreuzberg_parser_pynsist.ps1 minor        # bump minor + Release
 ```
