@@ -6,6 +6,7 @@ import asyncio
 import flet as ft
 from pathlib import Path
 import logging
+import sys
 import time
 import threading
 
@@ -27,6 +28,35 @@ logger = logging.getLogger(__name__)
 
 _UI_FLUSH_INTERVAL_S = 0.3
 _MAX_VISIBLE_LOG_LINES = 200
+_SPLASH_DURATION_S = 4.0
+
+
+def _assets_dir() -> Path:
+    """Locate ``assets/`` in dev (repo root) and Pynsist (install root)."""
+    try:
+        import config as cfg_mod
+
+        via_config = Path(cfg_mod.__file__).resolve().parent / "assets"
+        if via_config.is_dir():
+            return via_config
+    except Exception:
+        pass
+    # Fallback: ui/app.py -> repo root / assets (development layout)
+    return Path(__file__).resolve().parent.parent / "assets"
+
+
+def _app_version() -> str:
+    """Resolve APP_VERSION without re-importing main when already loaded."""
+    for mod_name in ("main", "__main__"):
+        mod = sys.modules.get(mod_name)
+        if mod is not None and hasattr(mod, "APP_VERSION"):
+            return str(mod.APP_VERSION)
+    try:
+        from main import APP_VERSION
+
+        return str(APP_VERSION)
+    except Exception:
+        return "0.0.0"
 
 
 class OCRApp:
@@ -278,7 +308,8 @@ class OCRApp:
                         ft.Row(
                             [
                                 ft.Text(
-                                    "📄 Sistema Inteligente de OCR para PDFs Judiciais",
+                                    f"Kiwi Down v. {_app_version()} — "
+                                    "Sistema Inteligente de OCR para PDFs Judiciais",
                                     size=24,
                                     weight=ft.FontWeight.BOLD,
                                     expand=True,
@@ -1091,10 +1122,37 @@ class OCRApp:
 
 
 
+async def _show_splash(page: ft.Page, duration_s: float = _SPLASH_DURATION_S) -> None:
+    """Show animated splash GIF centered for ``duration_s`` seconds."""
+    page.controls.clear()
+    page.add(
+        ft.Container(
+            expand=True,
+            alignment=ft.Alignment.CENTER,
+            bgcolor=ft.Colors.WHITE,
+            content=ft.Image(
+                src="kiwi_down.gif",
+                fit=ft.BoxFit.CONTAIN,
+                expand=True,
+            ),
+        )
+    )
+    page.update()
+    await asyncio.sleep(duration_s)
+    page.controls.clear()
+    page.update()
+
+
 def run_app():
     """Start Flet application"""
 
-    def main(page: ft.Page):
+    async def main(page: ft.Page):
+        page.title = Config.WINDOW_TITLE
+        page.window.width = Config.WINDOW_WIDTH
+        page.window.height = Config.WINDOW_HEIGHT
+        page.window.min_width = Config.WINDOW_WIDTH
+        page.window.min_height = Config.WINDOW_HEIGHT
+        await _show_splash(page)
         OCRApp(page)
 
-    ft.app(target=main)
+    ft.app(target=main, assets_dir=str(_assets_dir()))

@@ -346,7 +346,7 @@ class Config:
     WINDOW_WIDTH = 1140
     WINDOW_HEIGHT = 920
     MODE_OPTIONS_PANEL_HEIGHT = 200
-    WINDOW_TITLE = "OCR Inteligente para PDFs Judiciais (Powered by Kreuzberg)"
+    WINDOW_TITLE = "Kiwi Down (Powered by Kreuzberg)"
     THEME_MODE = "light"
     
     @classmethod

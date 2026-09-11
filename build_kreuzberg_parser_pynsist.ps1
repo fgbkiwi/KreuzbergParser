@@ -34,7 +34,6 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-$APP_NAME     = "KreuzbergParser"
 $ICON_SOURCE  = "assets\kreuzberg-parser.png"
 $ICON_COPY    = "kreuzberg-parser.ico"
 $CONFIG_FILE  = "kreuzberg_parser_pynsist.cfg"
@@ -42,8 +41,22 @@ $BUMP_SCRIPT  = "bump_version.py"
 $PYTHON_EXE   = ".venv\Scripts\python.exe"
 $GITHUB_REPO  = "fgbkiwi/KreuzbergParser"
 
+if (-not (Test-Path $CONFIG_FILE)) {
+    Write-Error "Config Pynsist nao encontrado: '$CONFIG_FILE'."
+    exit 1
+}
+
+# Nome do app vem do [Application] name= no cfg (Pynsist troca espacos por _).
+$configText = Get-Content -Raw -Path (Join-Path $ScriptDir $CONFIG_FILE)
+if ($configText -notmatch '(?m)^name\s*=\s*(.+?)\s*$') {
+    Write-Error "Nao foi possivel ler 'name=' de $CONFIG_FILE."
+    exit 1
+}
+$APP_NAME = $Matches[1].Trim()
+$INSTALLER_STEM = ($APP_NAME -replace '\s+', '_')
+
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " Building KreuzbergParser Windows Installer" -ForegroundColor Cyan
+Write-Host " Building $APP_NAME Windows Installer" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 if (-not (Test-Path $PYTHON_EXE)) {
@@ -101,7 +114,7 @@ if ($NoBump) {
     Write-Host "Nova versao: $VERSION" -ForegroundColor Green
 }
 
-$INSTALLER = Join-Path $ScriptDir "build\nsis\${APP_NAME}_${VERSION}.exe"
+$INSTALLER = Join-Path $ScriptDir "build\nsis\${INSTALLER_STEM}_${VERSION}.exe"
 $TAG = "v$VERSION"
 
 # --- Garantir pynsist instalado -----------------------------------------
@@ -172,14 +185,20 @@ if ($LASTEXITCODE -ne 0) {
 
 # pynsist pode retornar 0 mesmo se makensis falhar; confirmar o .exe
 Write-Host "`n[3/4] Verificando saida do instalador..." -ForegroundColor Cyan
-$produced = Get-ChildItem -Path "build\nsis" -Filter "*.exe" -ErrorAction SilentlyContinue
+$produced = @(Get-ChildItem -Path "build\nsis" -Filter "*.exe" -ErrorAction SilentlyContinue)
 if (-not $produced) {
     Write-Error "Nenhum instalador .exe foi gerado em build\nsis. makensis provavelmente falhou."
     exit 1
 }
 if (-not (Test-Path $INSTALLER)) {
-    Write-Error "Instalador esperado nao encontrado: $INSTALLER"
-    exit 1
+    $fallback = $produced | Where-Object { $_.Name -like "*_${VERSION}.exe" } | Select-Object -First 1
+    if ($fallback) {
+        Write-Host "Aviso: esperado $($INSTALLER | Split-Path -Leaf); usando $($fallback.Name)." -ForegroundColor Yellow
+        $INSTALLER = $fallback.FullName
+    } else {
+        Write-Error "Instalador esperado nao encontrado: $INSTALLER (gerados: $($produced.Name -join ', '))"
+        exit 1
+    }
 }
 
 Write-Host ""
