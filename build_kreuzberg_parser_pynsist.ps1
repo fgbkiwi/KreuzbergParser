@@ -34,8 +34,7 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-$ICON_SOURCE  = "assets\kreuzberg-parser.png"
-$ICON_COPY    = "kreuzberg-parser.ico"
+$ICON_SOURCE  = "assets\KiwiDown.ico"
 $CONFIG_FILE  = "kreuzberg_parser_pynsist.cfg"
 $BUMP_SCRIPT  = "bump_version.py"
 $PYTHON_EXE   = ".venv\Scripts\python.exe"
@@ -70,7 +69,7 @@ if (-not $NoBump -and -not (Test-Path $BUMP_SCRIPT)) {
 }
 
 if (-not (Test-Path $ICON_SOURCE)) {
-    Write-Error "Imagem de icone nao encontrada: '$ICON_SOURCE'."
+    Write-Error "Icone nao encontrado: '$ICON_SOURCE'."
     exit 1
 }
 
@@ -126,48 +125,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "  pynsist OK" -ForegroundColor Gray
 
-# Gerar icone a partir do PNG base para usar no app e no instalador
-Add-Type -AssemblyName System.Drawing
-$sourceImage = [System.Drawing.Image]::FromFile((Join-Path $ScriptDir $ICON_SOURCE))
-try {
-    $iconSize = 256
-    $bitmap = New-Object System.Drawing.Bitmap -ArgumentList $iconSize, $iconSize
-    try {
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        try {
-            $graphics.Clear([System.Drawing.Color]::Transparent)
-            $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-            $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-            $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-            $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
-
-            $scale = [Math]::Min($iconSize / $sourceImage.Width, $iconSize / $sourceImage.Height)
-            $drawWidth = [int][Math]::Round($sourceImage.Width * $scale)
-            $drawHeight = [int][Math]::Round($sourceImage.Height * $scale)
-            $offsetX = [int][Math]::Round(($iconSize - $drawWidth) / 2)
-            $offsetY = [int][Math]::Round(($iconSize - $drawHeight) / 2)
-            $graphics.DrawImage($sourceImage, $offsetX, $offsetY, $drawWidth, $drawHeight)
-        } finally {
-            $graphics.Dispose()
-        }
-
-        $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
-        try {
-            $stream = [System.IO.File]::Open((Join-Path $ScriptDir $ICON_COPY), [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
-            try {
-                $icon.Save($stream)
-            } finally {
-                $stream.Dispose()
-            }
-        } finally {
-            $icon.Dispose()
-        }
-    } finally {
-        $bitmap.Dispose()
-    }
-} finally {
-    $sourceImage.Dispose()
-}
+Write-Host "  Icone: $ICON_SOURCE" -ForegroundColor Gray
 
 # Limpar saida anterior para validar que o .exe atual veio deste build
 if (Test-Path "build\nsis") {
@@ -177,9 +135,328 @@ if (Test-Path "build\nsis") {
 # --- Compilar com Pynsist ------------------------------------------------
 Write-Host "`n[2/4] Gerando instalador com Pynsist + NSIS..." -ForegroundColor Cyan
 Write-Host "  (o stack CUDA torna este passo lento e o .exe grande)" -ForegroundColor Yellow
-& $PYTHON_EXE -m nsist $CONFIG_FILE
+
+$venvSp  = Join-Path $ScriptDir ".venv\Lib\site-packages"
+
+# Pre-seed do cliente Flet no venv para o pynsist copiar dentro do pacote
+# (File /r pkgs\*.* so inclui o que existir ANTES/durante o prepare).
+Write-Host "  Preparando flet_desktop/app/flet-windows.zip no venv..." -ForegroundColor Gray
+$fletAppInVenv = Join-Path $venvSp "flet_desktop\app"
+New-Item -ItemType Directory -Force -Path $fletAppInVenv | Out-Null
+$fletZipVenv = Join-Path $fletAppInVenv "flet-windows.zip"
+if (-not (Test-Path $fletZipVenv)) {
+    $fletVer = & $PYTHON_EXE -c "import flet_desktop.version as v; print(v.version)"
+    if ($LASTEXITCODE -ne 0 -or -not $fletVer) {
+        Write-Error "Nao foi possivel ler flet_desktop.version no venv."
+        exit 1
+    }
+    $fletVer = $fletVer.ToString().Trim()
+    $cacheClient = Join-Path $env:USERPROFILE ".flet\client\flet-desktop-full-$fletVer"
+    if ((Test-Path $cacheClient) -and (Test-Path (Join-Path $cacheClient "flet\flet.exe"))) {
+        Write-Host "  Compactando cache local $cacheClient" -ForegroundColor Gray
+        Compress-Archive -Path (Join-Path $cacheClient "*") -DestinationPath $fletZipVenv -Force
+    } else {
+        $url = "https://github.com/flet-dev/flet/releases/download/v$fletVer/flet-windows.zip"
+        Write-Host "  Baixando $url" -ForegroundColor Gray
+        Invoke-WebRequest -Uri $url -OutFile $fletZipVenv
+    }
+}
+if (-not (Test-Path $fletZipVenv)) {
+    Write-Error "Falha ao preparar flet-windows.zip em $fletZipVenv"
+    exit 1
+}
+
+# Substitui o icone padrao do flet.exe pelo KiwiDown.ico (barra de tarefas / pin).
+$patchIconScript = Join-Path $ScriptDir "scripts\patch_flet_exe_icon.py"
+if (-not (Test-Path $patchIconScript)) {
+    Write-Error "Script de icone nao encontrado: $patchIconScript"
+    exit 1
+}
+Write-Host "  Aplicando KiwiDown.ico em flet.exe dentro do zip..." -ForegroundColor Gray
+& $PYTHON_EXE $patchIconScript --zip $fletZipVenv --icon (Join-Path $ScriptDir $ICON_SOURCE)
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Falha ao gravar icone no flet-windows.zip (exit code $LASTEXITCODE)."
+    exit 1
+}
+
+# Extrai FORA de site-packages: o Flutter Windows traz data\app.so e o Pynsist
+# rejeita qualquer .so ao copiar o pacote flet_desktop (ExtensionModuleMismatch).
+# O cliente entra no instalador via files= (kreuzberg_parser_pynsist.cfg).
+$fletRuntimeRoot = Join-Path $ScriptDir "build\flet_runtime"
+$fletExtracted = Join-Path $fletRuntimeRoot "flet"
+if (Test-Path $fletRuntimeRoot) {
+    Remove-Item -LiteralPath $fletRuntimeRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $fletRuntimeRoot | Out-Null
+
+# Remove extracao antiga dentro do pacote Python (builds anteriores).
+$legacyExtracted = Join-Path $fletAppInVenv "flet"
+if (Test-Path $legacyExtracted) {
+    Write-Host "  Removendo extracao legada em flet_desktop\app\flet..." -ForegroundColor Gray
+    Remove-Item -LiteralPath $legacyExtracted -Recurse -Force
+}
+
+Write-Host "  Extraindo cliente Flet patchado para build\flet_runtime..." -ForegroundColor Gray
+Expand-Archive -Path $fletZipVenv -DestinationPath $fletRuntimeRoot -Force
+if (-not (Test-Path (Join-Path $fletExtracted "flet.exe"))) {
+    Write-Error "flet.exe nao encontrado apos extracao em $fletExtracted"
+    exit 1
+}
+
+Write-Host ("  flet-windows.zip no venv OK ({0:N1} MB)" -f ((Get-Item $fletZipVenv).Length / 1MB)) -ForegroundColor Gray
+
+# Remove NSI/icone residual de builds anteriores (evita NSI corrompido e KiwiDown.1.ico).
+$nsisDir = Join-Path $ScriptDir "build\nsis"
+if (Test-Path $nsisDir) {
+    Remove-Item -LiteralPath (Join-Path $nsisDir "installer.nsi") -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $nsisDir -Filter "KiwiDown*.ico" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne "KiwiDown.ico" } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+# Prepara pkgs/NSI sem makensis para podermos completar deps/metadados.
+& $PYTHON_EXE -m nsist --no-makensis $CONFIG_FILE
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Pynsist falhou (exit code $LASTEXITCODE). Abortando."
+    exit 1
+}
+
+$pkgsOut = Join-Path $ScriptDir "build\nsis\pkgs"
+if (-not (Test-Path $pkgsOut)) {
+    Write-Error "Pasta de pacotes nao encontrada: $pkgsOut"
+    exit 1
+}
+
+Write-Host "  Completando deps nativas / metadados do venv..." -ForegroundColor Gray
+$extraItems = @(
+    "torchgen",
+    "functorch",
+    "typing_extensions.py",
+    "huggingface_hub",
+    "tokenizers",
+    "safetensors",
+    "regex",
+    "requests",
+    "packaging",
+    "filelock",
+    "fsspec",
+    "jinja2",
+    "networkx",
+    "sympy",
+    "mpmath",
+    "markupsafe",
+    "certifi",
+    "charset_normalizer",
+    "idna",
+    "urllib3",
+    "httpx",
+    "httpcore",
+    "anyio",
+    "sniffio",
+    "h11",
+    "pydantic",
+    "pydantic_core",
+    "annotated_types",
+    "typing_inspection",
+    "msgpack",
+    "flet_desktop",
+    "rich",
+    "markdown_it",
+    "mdurl",
+    "pygments"
+)
+foreach ($item in $extraItems) {
+    $src = Join-Path $venvSp $item
+    $dest = Join-Path $pkgsOut $item
+    if (-not (Test-Path $src)) { continue }
+    # Evita aninhar pasta/pasta quando o pynsist ja copiou o pacote.
+    if (Test-Path $dest) { continue }
+    Copy-Item -LiteralPath $src -Destination $dest -Recurse -Force
+}
+
+# Metadados necessarios para importlib.metadata.version("kreuzberg"/...)
+Get-ChildItem -Path $venvSp -Directory -Filter "*.dist-info" | ForEach-Object {
+    $distName = $_.Name
+    $pkgKey = ($distName -split '-')[0].ToLower().Replace('_', '-')
+    $aliases = @{
+        "pillow" = "PIL"
+        "python-dotenv" = "dotenv"
+        "pyyaml" = "yaml"
+        "scikit-image" = "skimage"
+        "opencv-python-headless" = "cv2"
+        "flet-desktop" = "flet_desktop"
+    }
+    $probe = if ($aliases.ContainsKey($pkgKey)) { $aliases[$pkgKey] } else { ($distName -split '-')[0] }
+    $already = (Test-Path (Join-Path $pkgsOut $probe)) -or
+               (Test-Path (Join-Path $pkgsOut ($probe + ".py"))) -or
+               (Test-Path (Join-Path $pkgsOut ($probe.Replace("-", "_"))))
+    $destMeta = Join-Path $pkgsOut $distName
+    if ($already -and -not (Test-Path $destMeta)) {
+        Copy-Item -LiteralPath $_.FullName -Destination $destMeta -Recurse -Force
+    }
+}
+
+# Garantir zip do Flet no pkgs (File /r pkgs\*.* inclui o que estiver aqui).
+$fletZipPkgs = Join-Path $pkgsOut "flet_desktop\app\flet-windows.zip"
+if (-not (Test-Path $fletZipPkgs)) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $fletZipPkgs -Parent) | Out-Null
+    Copy-Item -LiteralPath $fletZipVenv -Destination $fletZipPkgs -Force
+}
+if (-not (Test-Path $fletZipPkgs)) {
+    Write-Error "flet-windows.zip ausente em $fletZipPkgs"
+    exit 1
+}
+if (-not (Test-Path (Join-Path $pkgsOut "rich"))) {
+    Write-Error "Pacote 'rich' ausente em $pkgsOut (necessario para import flet_desktop)."
+    exit 1
+}
+Write-Host "  Verificacao Flet/rich OK" -ForegroundColor Gray
+
+# Se o mapeamento files= aninhar *.libs\*.libs, desfaz.
+foreach ($libsName in @("numpy.libs", "scipy.libs", "shapely.libs", "pandas.libs")) {
+    $outer = Join-Path $pkgsOut $libsName
+    $inner = Join-Path $outer $libsName
+    if (Test-Path $inner) {
+        Get-ChildItem -Path $inner -File | ForEach-Object {
+            Move-Item -LiteralPath $_.FullName -Destination (Join-Path $outer $_.Name) -Force
+        }
+        Remove-Item -LiteralPath $inner -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Patch installer.nsi: close running Kiwi Down before overwriting assets.
+# Never put PowerShell $_ / regex replacements into the .nsi — that corrupted
+# prior builds (unterminated string). Helper .ps1 is File'd into PLUGINSDIR.
+$nsiPath = Join-Path $ScriptDir "build\nsis\installer.nsi"
+$closeHelperPath = Join-Path $ScriptDir "build\nsis\close_kiwi_down.ps1"
+if (-not (Test-Path $nsisDir)) {
+    New-Item -ItemType Directory -Path $nsisDir -Force | Out-Null
+}
+
+# Drop any leftover duplicate icon so pynsist/nsist does not ship KiwiDown.1.ico.
+Get-ChildItem -LiteralPath $nsisDir -Filter "KiwiDown*.ico" -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne "KiwiDown.ico" } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+$closeHelperLines = @(
+    "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |"
+    "  Where-Object {"
+    "    `$_.Name -match '^(pythonw|python)\.exe$' -and"
+    "    `$_.CommandLine -match 'Kiwi_Down|KreuzbergParser|kiwi_down'"
+    "  } |"
+    "  ForEach-Object {"
+    "    Stop-Process -Id `$_.ProcessId -Force -ErrorAction SilentlyContinue"
+    "  }"
+)
+[System.IO.File]::WriteAllLines($closeHelperPath, $closeHelperLines)
+
+if (-not (Test-Path $nsiPath)) {
+    Write-Error "installer.nsi nao encontrado apos pynsist."
+    exit 1
+}
+
+$nsi = [System.IO.File]::ReadAllText($nsiPath)
+$productNameHits = ([regex]::Matches($nsi, '(?m)^!define PRODUCT_NAME ')).Count
+if ($productNameHits -ne 1) {
+    Write-Error "installer.nsi invalido apos pynsist (PRODUCT_NAME x$productNameHits). Apague build\nsis e rode de novo."
+    exit 1
+}
+if ($nsi.Contains("Get-CimInstance") -or $nsi.Contains("close_kiwi_down.ps1")) {
+    Write-Error "installer.nsi ja contem patch residual. Apague build\nsis\installer.nsi e rode de novo."
+    exit 1
+}
+
+# Padrao: C:\Program Files\Kiwi Down (AllUsers) em vez de
+# %LOCALAPPDATA%\Programs\Kiwi Down (CurrentUser).
+# O usuario ainda pode escolher "apenas para mim" na pagina MultiUser.
+$defaultUserMode = '!define MULTIUSER_INSTALLMODE_DEFAULT_CURRENTUSER'
+$defaultAllUsers = '!define MULTIUSER_INSTALLMODE_DEFAULT_ALLUSERS'
+if ($nsi.Contains($defaultAllUsers)) {
+    Write-Host "  Install dir padrao ja e AllUsers (Program Files)" -ForegroundColor Gray
+} elseif ($nsi.Contains($defaultUserMode)) {
+    $nsi = $nsi.Replace($defaultUserMode, $defaultAllUsers)
+    Write-Host "  Patch NSIS: install dir padrao -> Program Files\Kiwi Down" -ForegroundColor Gray
+} else {
+    Write-Error "Nao foi possivel localizar MULTIUSER_INSTALLMODE_DEFAULT_CURRENTUSER no installer.nsi."
+    exit 1
+}
+
+$marker = "; Kiwi Down: release splash/GIF file locks before overwrite"
+# Build inject as string[] then Join — avoids here-string / regex $ pitfalls.
+$injectLines = @(
+    "  $marker"
+    '  DetailPrint "Encerrando instancias em execucao do Kiwi Down (se houver)..."'
+    "  InitPluginsDir"
+    '  SetOutPath "$PLUGINSDIR"'
+    '  File "close_kiwi_down.ps1"'
+    '  nsExec::ExecToLog ''powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\close_kiwi_down.ps1"'''
+    "  Sleep 800"
+    "  ; Limpa residuos de installs antigos que bloqueiam a gravacao de assets"
+    '  RMDir /r "$INSTDIR\assets\assets"'
+    '  RMDir /r "$INSTDIR\assets\kiwi_down.gif"'
+    '  Delete "$INSTDIR\assets\kiwi_down.gif"'
+    '  RMDir /r "$INSTDIR\assets\kreuzberg-parser.png"'
+    '  Delete "$INSTDIR\assets\kreuzberg-parser.png"'
+    '  RMDir /r "$INSTDIR\assets\KiwiDown.ico"'
+    '  Delete "$INSTDIR\assets\KiwiDown.ico"'
+    '  Delete "$INSTDIR\kreuzberg-parser.ico"'
+    '  Delete "$INSTDIR\kreuzberg-parser.1.ico"'
+    '  Delete "$INSTDIR\assets\KiwiDown.1.ico"'
+    ""
+)
+$inject = ($injectLines -join "`r`n") + "`r`n"
+
+$anchor = "; Install files"
+$idx = $nsi.IndexOf($anchor)
+if ($idx -lt 0) {
+    $anchor = "; Install directories"
+    $idx = $nsi.IndexOf($anchor)
+}
+if ($idx -lt 0) {
+    Write-Error "Nao foi possivel localizar ponto de injecao no installer.nsi."
+    exit 1
+}
+
+$nsi = $nsi.Insert($idx, $inject)
+# Strip accidental KiwiDown.1.ico File lines if residual icon was copied.
+$nsi = [regex]::Replace($nsi, '(?m)^\s*File "KiwiDown\.\d+\.ico"\s*\r?\n', "")
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($nsiPath, $nsi, $utf8NoBom)
+
+$productNameHits = ([regex]::Matches($nsi, '(?m)^!define PRODUCT_NAME ')).Count
+if ($productNameHits -ne 1) {
+    Write-Error "Patch NSIS corrompeu installer.nsi (PRODUCT_NAME x$productNameHits). Abortando antes do makensis."
+    exit 1
+}
+if ($nsi.Contains("Get-CimInstance")) {
+    Write-Error "Patch NSIS inseriu comando inline indevido. Abortando."
+    exit 1
+}
+Write-Host "  Patch NSIS: liberacao de lock do GIF / limpeza assets aninhados" -ForegroundColor Gray
+
+$makensis = $null
+foreach ($candidate in @(
+    "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+    "$env:ProgramFiles\NSIS\makensis.exe",
+    "makensis"
+)) {
+    if ($candidate -eq "makensis") {
+        $cmd = Get-Command makensis -ErrorAction SilentlyContinue
+        if ($cmd) { $makensis = $cmd.Source; break }
+    } elseif (Test-Path $candidate) {
+        $makensis = $candidate
+        break
+    }
+}
+if (-not $makensis) {
+    Write-Error "makensis nao encontrado. Instale o NSIS."
+    exit 1
+}
+
+Write-Host "  Executando makensis..." -ForegroundColor Gray
+& $makensis (Join-Path $ScriptDir "build\nsis\installer.nsi")
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "makensis falhou (exit code $LASTEXITCODE). Abortando."
     exit 1
 }
 

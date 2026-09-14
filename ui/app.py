@@ -6,6 +6,7 @@ import asyncio
 import flet as ft
 from pathlib import Path
 import logging
+import os
 import sys
 import time
 import threading
@@ -29,20 +30,145 @@ logger = logging.getLogger(__name__)
 _UI_FLUSH_INTERVAL_S = 0.3
 _MAX_VISIBLE_LOG_LINES = 200
 _SPLASH_DURATION_S = 4.0
+_SPLASH_GIF_WIDTH = 480
+_SPLASH_GIF_HEIGHT = 526
+_SPLASH_SIDE_CROP_PX = 1
+_SPLASH_DISPLAY_HEIGHT = 560
+_SPLASH_CORNER_RADIUS = 28
+# Matches utils.early_splash: caption under the GIF's own "Kiwi Down".
+_SPLASH_AGUARDE_Y_ALIGN = 0.87
+# Windows AppUserModelID so taskbar pins associate with Kiwi Down, not flet.exe.
+_APP_USER_MODEL_ID = "KiwiDown.App"
 
 
 def _assets_dir() -> Path:
-    """Locate ``assets/`` in dev (repo root) and Pynsist (install root)."""
+    """Locate asset files in dev (``assets/``) and Pynsist (install root).
+
+    Prefer the directory that actually contains ``kiwi_down.gif``, including
+    the legacy nested ``assets/assets`` layout from older installers.
+    """
+    try:
+        from utils.early_splash import find_splash_gif
+
+        gif = find_splash_gif()
+        if gif is not None:
+            return gif.parent
+    except Exception:
+        pass
+
+    candidates: list[Path] = []
     try:
         import config as cfg_mod
 
-        via_config = Path(cfg_mod.__file__).resolve().parent / "assets"
-        if via_config.is_dir():
-            return via_config
+        root = Path(cfg_mod.__file__).resolve().parent
+        candidates.extend(
+            [
+                root / "assets",
+                root / "assets" / "assets",
+                root,
+            ]
+        )
     except Exception:
         pass
-    # Fallback: ui/app.py -> repo root / assets (development layout)
-    return Path(__file__).resolve().parent.parent / "assets"
+    # ui/app.py -> repo root (dev) or pkgs parent layout
+    here = Path(__file__).resolve().parent
+    candidates.extend(
+        [
+            here.parent / "assets",
+            here.parent / "assets" / "assets",
+            here.parent.parent / "assets",
+            here.parent.parent / "assets" / "assets",
+            here.parent,
+            here.parent.parent,
+        ]
+    )
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for raw in candidates:
+        try:
+            path = raw.resolve()
+        except OSError:
+            continue
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+
+    for path in unique:
+        if path.is_dir() and (path / "kiwi_down.gif").is_file():
+            return path
+    for path in unique:
+        if path.is_dir() and path.name.lower() == "assets":
+            return path
+    return unique[0] if unique else Path("assets")
+
+
+def _find_app_icon() -> Path | None:
+    """Locate ``KiwiDown.ico`` in dev assets and Pynsist install layouts."""
+    names = ("KiwiDown.ico", "kiwi_down.ico")
+    candidates: list[Path] = []
+
+    try:
+        assets = _assets_dir()
+        candidates.extend(assets / name for name in names)
+    except Exception:
+        pass
+
+    try:
+        import config as cfg_mod
+
+        root = Path(cfg_mod.__file__).resolve().parent
+        for name in names:
+            candidates.extend(
+                [
+                    root / name,
+                    root / "assets" / name,
+                ]
+            )
+    except Exception:
+        pass
+
+    here = Path(__file__).resolve().parent
+    for name in names:
+        candidates.extend(
+            [
+                here.parent / "assets" / name,
+                here.parent / name,
+                here.parent.parent / "assets" / name,
+                here.parent.parent / name,
+            ]
+        )
+
+    seen: set[str] = set()
+    for raw in candidates:
+        try:
+            path = raw.resolve()
+        except OSError:
+            continue
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.is_file():
+            return path
+    return None
+
+
+def _configure_windows_app_identity() -> None:
+    """Ask the Flet desktop client to use our AppUserModelID on Windows."""
+    if sys.platform != "win32":
+        return
+    os.environ.setdefault("FLET_APP_USER_MODEL_ID", _APP_USER_MODEL_ID)
+
+
+def _apply_window_icon(page: ft.Page) -> None:
+    """Set the live window/taskbar icon (absolute .ico path required on Windows)."""
+    icon = _find_app_icon()
+    if icon is None:
+        return
+    page.window.icon = str(icon)
 
 
 def _app_version() -> str:
@@ -135,7 +261,9 @@ class OCRApp:
         self.page.window.width = self.config.WINDOW_WIDTH
         self.page.window.height = self.config.WINDOW_HEIGHT
         self.page.window.min_width = self.config.WINDOW_WIDTH
-        self.page.window.min_height = self.config.WINDOW_HEIGHT
+        self.page.window.min_height = self.config.WINDOW_MIN_HEIGHT
+        self.page.padding = 0
+        _apply_window_icon(self.page)
         self.page.theme_mode = self._resolve_theme_mode(self.config.THEME_MODE)
 
         self.pdf_picker = ft.FilePicker()
@@ -255,7 +383,13 @@ class OCRApp:
             gpu_color = ft.Colors.ORANGE
         else:
             gpu_color = ft.Colors.ORANGE
-        self.gpu_status = ft.Text(gpu_status_text, size=12, color=gpu_color)
+        self.gpu_status = ft.Text(
+            gpu_status_text,
+            size=12,
+            color=gpu_color,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
 
         self.progress_bar = ft.ProgressBar(expand=True, visible=False)
         self.progress_text = ft.Text(
@@ -305,24 +439,28 @@ class OCRApp:
                 expand=True,
                 content=ft.Column(
                     [
-                        ft.Row(
-                            [
-                                ft.Text(
-                                    f"Kiwi Down v. {_app_version()} — "
-                                    "Sistema Inteligente de OCR para PDFs Judiciais",
-                                    size=24,
-                                    weight=ft.FontWeight.BOLD,
-                                    expand=True,
-                                ),
-                                ft.Text(
-                                    "Powered by Kreuzberg 🚀",
-                                    size=14,
-                                    color=ft.Colors.BLUE_700,
-                                ),
-                            ],
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        ft.Container(
+                            padding=ft.Padding.symmetric(vertical=2),
+                            content=ft.Row(
+                                [
+                                    ft.Text(
+                                        f"Kiwi Down v. {_app_version()} — "
+                                        "Sistema Inteligente de OCR para PDFs Judiciais",
+                                        size=20,
+                                        weight=ft.FontWeight.BOLD,
+                                        expand=True,
+                                    ),
+                                    ft.Text(
+                                        "Powered by Kreuzberg 🚀",
+                                        size=13,
+                                        color=ft.Colors.BLUE_700,
+                                    ),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
                         ),
-                        ft.Divider(height=16),
+                        ft.Divider(height=8),
                         ft.Container(
                             padding=12,
                             border=ft.Border.all(1, ft.Colors.GREY_400),
@@ -330,13 +468,14 @@ class OCRApp:
                             bgcolor=ft.Colors.GREY_50,
                             content=ft.Column(
                                 [
-                                    ft.Text(
-                                        "📁 Seleção de Arquivos",
-                                        size=16,
-                                        weight=ft.FontWeight.BOLD,
-                                    ),
                                     ft.Row(
                                         [
+                                            ft.Text(
+                                                "📁 Seleção de Arquivos",
+                                                size=16,
+                                                weight=ft.FontWeight.BOLD,
+                                                expand=True,
+                                            ),
                                             self.queue_count_text,
                                             ft.ElevatedButton(
                                                 content=ft.Text("📂 Selecionar PDFs"),
@@ -347,6 +486,7 @@ class OCRApp:
                                             self.clear_queue_button,
                                         ],
                                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                        spacing=12,
                                     ),
                                     ft.Container(
                                         height=110,
@@ -374,7 +514,7 @@ class OCRApp:
                         ft.Row(
                             [
                                 ft.Container(
-                                    expand=55,
+                                    expand=45,
                                     height=self.config.MODE_OPTIONS_PANEL_HEIGHT,
                                     padding=10,
                                     border=ft.Border.all(1, ft.Colors.GREY_400),
@@ -394,7 +534,7 @@ class OCRApp:
                                     ),
                                 ),
                                 ft.Container(
-                                    expand=45,
+                                    expand=55,
                                     height=self.config.MODE_OPTIONS_PANEL_HEIGHT,
                                     padding=10,
                                     border=ft.Border.all(1, ft.Colors.GREY_400),
@@ -402,10 +542,22 @@ class OCRApp:
                                     bgcolor=ft.Colors.GREEN_50,
                                     content=ft.Column(
                                         [
-                                            ft.Text(
-                                                "🔧 Opções",
-                                                size=16,
-                                                weight=ft.FontWeight.BOLD,
+                                            ft.Row(
+                                                [
+                                                    ft.Text(
+                                                        "🔧 Opções",
+                                                        size=16,
+                                                        weight=ft.FontWeight.BOLD,
+                                                    ),
+                                                    ft.Container(expand=True),
+                                                    ft.Icon(
+                                                        ft.Icons.COMPUTER, size=16
+                                                    ),
+                                                    ft.Text("Status GPU:", size=12),
+                                                    self.gpu_status,
+                                                ],
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                                spacing=6,
                                             ),
                                             ft.Container(
                                                 height=32,
@@ -416,20 +568,6 @@ class OCRApp:
                                                 height=56,
                                                 alignment=ft.Alignment.CENTER_LEFT,
                                                 content=self.vlm_dropdown,
-                                            ),
-                                            ft.Container(
-                                                height=32,
-                                                alignment=ft.Alignment.CENTER_LEFT,
-                                                content=ft.Row(
-                                                    [
-                                                        ft.Container(width=14),
-                                                        ft.Icon(
-                                                            ft.Icons.COMPUTER, size=16
-                                                        ),
-                                                        ft.Text("Status GPU:", size=12),
-                                                        self.gpu_status,
-                                                    ]
-                                                ),
                                             ),
                                         ],
                                         spacing=8,
@@ -444,30 +582,33 @@ class OCRApp:
                             [
                                 ft.Container(
                                     expand=2,
-                                    height=240,
+                                    height=self.config.LOG_STATS_PANEL_HEIGHT,
                                     padding=10,
                                     border=ft.Border.all(1, ft.Colors.GREY_400),
                                     border_radius=5,
                                     bgcolor=ft.Colors.AMBER_50,
                                     content=ft.Column(
                                         [
-                                            ft.Text(
-                                                "📋 Log de Processamento",
-                                                size=16,
-                                                weight=ft.FontWeight.BOLD,
+                                            ft.Row(
+                                                [
+                                                    ft.Text(
+                                                        "📋 Log de Processamento",
+                                                        size=16,
+                                                        weight=ft.FontWeight.BOLD,
+                                                        expand=True,
+                                                    ),
+                                                    self.save_log_button,
+                                                ],
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                             ),
                                             self.log_field,
-                                            ft.Row(
-                                                [self.save_log_button],
-                                                alignment=ft.MainAxisAlignment.END,
-                                            ),
                                         ],
                                         spacing=8,
                                     ),
                                 ),
                                 ft.Container(
                                     expand=1,
-                                    height=240,
+                                    height=self.config.LOG_STATS_PANEL_HEIGHT,
                                     padding=10,
                                     border=ft.Border.all(1, ft.Colors.GREY_400),
                                     border_radius=5,
@@ -501,22 +642,21 @@ class OCRApp:
                         ),
                     ],
                     scroll=ft.ScrollMode.AUTO,
-                    spacing=12,
+                    spacing=10,
                 ),
-                padding=20,
+                # Menos padding vertical para caber em notebooks e não cobrir
+                # o botão "PROCESSAR FILA" com a moldura inferior.
+                padding=ft.Padding.only(left=16, top=8, right=16, bottom=6),
             )
         )
 
     def _get_gpu_status_text(self) -> str:
         if self.gpu_info["available"] and self.gpu_suitable:
-            base = (
+            return (
                 f"✅ {self.gpu_info['name']} "
                 f"(cuda:{self.gpu_info.get('device_id', 0)}, "
                 f"{self.gpu_info['vram_gb']}GB VRAM)"
             )
-            if not paddle_gpu_supported_on_platform():
-                return f"{base} — PaddleOCR GPU indisponível no Windows"
-            return base
         if self.gpu_info["available"] and not self.gpu_suitable:
             return f"⚠️ {self.gpu_suitable_message} — modos GPU desabilitados"
         return "❌ GPU não detectada — modos GPU desabilitados"
@@ -1123,17 +1263,90 @@ class OCRApp:
 
 
 async def _show_splash(page: ft.Page, duration_s: float = _SPLASH_DURATION_S) -> None:
-    """Show animated splash GIF centered for ``duration_s`` seconds."""
+    """Show animated splash GIF centered for ``duration_s`` seconds.
+
+    Crops the thin dark side borders baked into the asset, clips to rounded
+    corners, and overlays only \"Aguarde...\" under the GIF's own
+    \"Kiwi Down\" lettering (no duplicate title / white footer band).
+
+    Does **not** dismiss the native early splash — the caller closes it after
+    the main UI is ready, so the user never sees a blank Flet window.
+    """
+    gif_path = None
+    try:
+        from utils.early_splash import find_splash_gif, splash_debug
+
+        gif_path = find_splash_gif()
+        splash_debug(
+            "flet splash gif=%s assets_dir=%s exists=%s",
+            gif_path,
+            _assets_dir(),
+            bool(gif_path and gif_path.is_file()),
+        )
+    except Exception as exc:
+        try:
+            from utils.early_splash import splash_debug
+
+            splash_debug("flet splash setup error: %s", exc)
+        except Exception:
+            pass
+
+    content_w = _SPLASH_GIF_WIDTH - (2 * _SPLASH_SIDE_CROP_PX)
+    content_h = _SPLASH_GIF_HEIGHT
+    display_h = _SPLASH_DISPLAY_HEIGHT
+    display_w = int(round(display_h * content_w / content_h))
+    scale = display_h / content_h
+    img_w = _SPLASH_GIF_WIDTH * scale
+    img_h = _SPLASH_GIF_HEIGHT * scale
+    offset_x = -_SPLASH_SIDE_CROP_PX * scale
+
+    # Prefer assets-relative name (most reliable with ft.app assets_dir).
+    # Fall back to absolute path if the file lives outside assets_dir.
+    assets = _assets_dir()
+    if gif_path is not None and gif_path.parent.resolve() == assets.resolve():
+        image_src = gif_path.name
+    elif gif_path is not None:
+        image_src = str(gif_path)
+    else:
+        image_src = "kiwi_down.gif"
+
     page.controls.clear()
     page.add(
         ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
             bgcolor=ft.Colors.WHITE,
-            content=ft.Image(
-                src="kiwi_down.gif",
-                fit=ft.BoxFit.CONTAIN,
-                expand=True,
+            content=ft.Container(
+                width=display_w,
+                height=display_h,
+                border_radius=_SPLASH_CORNER_RADIUS,
+                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                content=ft.Stack(
+                    [
+                        ft.Container(
+                            left=offset_x,
+                            width=img_w,
+                            height=img_h,
+                            content=ft.Image(
+                                src=image_src,
+                                width=img_w,
+                                height=img_h,
+                                fit=ft.BoxFit.FILL,
+                                gapless_playback=True,
+                            ),
+                        ),
+                        ft.Container(
+                            expand=True,
+                            alignment=ft.Alignment(0, _SPLASH_AGUARDE_Y_ALIGN),
+                            content=ft.Text(
+                                "Aguarde...",
+                                size=16,
+                                color=ft.Colors.GREY_700,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                        ),
+                    ]
+                ),
             ),
         )
     )
@@ -1145,14 +1358,58 @@ async def _show_splash(page: ft.Page, duration_s: float = _SPLASH_DURATION_S) ->
 
 def run_app():
     """Start Flet application"""
+    from utils.flet_ui import patch_flet_desktop_no_console
+
+    patch_flet_desktop_no_console()
+    _configure_windows_app_identity()
+
+    # Keep assets_dir aligned with the resolved GIF location.
+    try:
+        from utils.early_splash import find_splash_gif, splash_debug
+
+        gif = find_splash_gif()
+        assets = str(gif.parent) if gif is not None else str(_assets_dir())
+        splash_debug("ft.app assets_dir=%s", assets)
+    except Exception:
+        assets = str(_assets_dir())
 
     async def main(page: ft.Page):
+        # Start hidden so the default blank "Flet" window never flashes.
+        # The native early splash covers the wait; we reveal after UI paint.
+        try:
+            from utils.early_splash import (
+                close_early_splash,
+                early_splash_active,
+                splash_debug,
+            )
+        except Exception:
+            close_early_splash = lambda: None  # noqa: E731
+            early_splash_active = lambda: False  # noqa: E731
+            splash_debug = lambda *a, **k: None  # noqa: E731
+
         page.title = Config.WINDOW_TITLE
+        _apply_window_icon(page)
         page.window.width = Config.WINDOW_WIDTH
         page.window.height = Config.WINDOW_HEIGHT
         page.window.min_width = Config.WINDOW_WIDTH
-        page.window.min_height = Config.WINDOW_HEIGHT
-        await _show_splash(page)
-        OCRApp(page)
+        page.window.min_height = Config.WINDOW_MIN_HEIGHT
+        page.padding = 0
+        page.window.visible = False
+        page.update()
 
-    ft.app(target=main, assets_dir=str(_assets_dir()))
+        # Skip the in-window GIF splash when the native splash already ran —
+        # otherwise the user stares at a blank Flet chrome after it closes.
+        if early_splash_active():
+            splash_debug("skipping flet splash; early splash still active")
+        else:
+            await _show_splash(page)
+
+        OCRApp(page)
+        page.update()
+        page.window.visible = True
+        page.window.focused = True
+        page.update()
+        close_early_splash()
+
+    # Hidden until main() reveals the window with content painted.
+    ft.app(target=main, assets_dir=assets, view=ft.AppView.FLET_APP_HIDDEN)

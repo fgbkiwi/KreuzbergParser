@@ -344,8 +344,10 @@ class Config:
     
     # ===== UI SETTINGS =====
     WINDOW_WIDTH = 1140
-    WINDOW_HEIGHT = 920
-    MODE_OPTIONS_PANEL_HEIGHT = 200
+    WINDOW_HEIGHT = 800
+    WINDOW_MIN_HEIGHT = 680
+    MODE_OPTIONS_PANEL_HEIGHT = 160
+    LOG_STATS_PANEL_HEIGHT = 165
     WINDOW_TITLE = "Kiwi Down (Powered by Kreuzberg)"
     THEME_MODE = "light"
     
