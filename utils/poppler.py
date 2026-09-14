@@ -88,11 +88,24 @@ def poppler_tool(name: str) -> str | None:
     return found
 
 
-def subprocess_kwargs() -> dict:
-    """Extra kwargs so GUI runs do not flash a console on Windows."""
+def subprocess_kwargs(**extra) -> dict:
+    """Kwargs for Poppler CLI subprocesses.
+
+    On Windows, suppresses console flashes. When ``text=True`` (or
+    ``universal_newlines=True``), forces UTF-8 with replacement so PDF
+    metadata that is not valid in the active ANSI code page (cp1252
+    "charmap") does not raise ``UnicodeDecodeError`` on machines with a
+    different locale than the developer's.
+    """
+    kwargs = dict(extra)
     if sys.platform == "win32":
-        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
-    return {}
+        kwargs.setdefault(
+            "creationflags", getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    if kwargs.get("text") or kwargs.get("universal_newlines"):
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+    return kwargs
 
 
 def _tools_present(bin_dir: Path) -> bool:

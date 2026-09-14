@@ -22,8 +22,7 @@ def get_page_count(pdf_path: str | Path) -> int:
     output = subprocess.check_output(
         [pdfinfo, str(pdf_path)],
         stderr=subprocess.DEVNULL,
-        text=True,
-        **subprocess_kwargs(),
+        **subprocess_kwargs(text=True),
     )
     for line in output.splitlines():
         if line.startswith("Pages:"):

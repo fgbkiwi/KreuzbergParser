@@ -79,6 +79,11 @@ def run_dependency_check(
         timeout=timeout_s,
         env=os.environ.copy(),
         check=False,
+        **(
+            {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+            if sys.platform == "win32"
+            else {}
+        ),
     )
 
 

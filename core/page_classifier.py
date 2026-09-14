@@ -337,10 +337,9 @@ def _pdf_info_field(pdf_path: Path, field: str) -> Optional[str]:
         output = subprocess.check_output(
             [pdfinfo, str(pdf_path)],
             stderr=subprocess.DEVNULL,
-            text=True,
-            **subprocess_kwargs(),
+            **subprocess_kwargs(text=True),
         )
-    except (subprocess.CalledProcessError, OSError):
+    except (subprocess.CalledProcessError, OSError, UnicodeError):
         return None
     prefix = f"{field}:"
     for line in output.splitlines():
@@ -543,10 +542,9 @@ def list_pdf_images(pdf_path: str | Path) -> List[PageImageInfo]:
         output = subprocess.check_output(
             [pdfimages, "-list", str(pdf_path)],
             stderr=subprocess.DEVNULL,
-            text=True,
-            **subprocess_kwargs(),
+            **subprocess_kwargs(text=True),
         )
-    except (subprocess.CalledProcessError, OSError) as exc:
+    except (subprocess.CalledProcessError, OSError, UnicodeError) as exc:
         logger.warning("pdfimages -list failed for %s: %s", pdf_path.name, exc)
         return []
 

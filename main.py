@@ -5,11 +5,12 @@ Entry point - Powered by Kreuzberg
 90% code reduction compared to original implementation
 """
 import logging
+import os
 import sys
 from pathlib import Path
 
 APP_NAME = "KreuzbergParser"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.13"
 GITHUB_OWNER = "fgbkiwi"
 GITHUB_REPO = "KreuzbergParser"
 
@@ -76,12 +77,14 @@ def main():
     from utils.gpu_detector import gpu_detector
     gpu_detector.log_gpu_status()
 
-    # Advisory dependency check (at most every 7 days; never blocks startup)
-    try:
-        from scripts.check_updates import maybe_check_dependency_updates
-        maybe_check_dependency_updates(logger_=logger, background=True)
-    except Exception:
-        logger.debug("Checagem periódica de dependências ignorada", exc_info=True)
+    # Advisory dependency check (dev only; never in the installed GUI app —
+    # launching bash there flashes a console window on Windows).
+    if not os.environ.get("KREUZBERG_PARSER_HOME"):
+        try:
+            from scripts.check_updates import maybe_check_dependency_updates
+            maybe_check_dependency_updates(logger_=logger, background=True)
+        except Exception:
+            logger.debug("Checagem periódica de dependências ignorada", exc_info=True)
 
     logger.info("")
     logger.info("🎯 Iniciando interface gráfica...")
@@ -89,8 +92,6 @@ def main():
     # Flet auto-instala flet-desktop via `uv pip` se faltar. Com outro venv
     # ativo (ex.: .venv-nemotron), o uv instala no lugar errado e o import
     # no interpretador do .venv falha. Alinha VIRTUAL_ENV ao Python em uso.
-    import os
-
     os.environ["VIRTUAL_ENV"] = str(Path(sys.prefix).resolve())
     os.environ.pop("UV_PROJECT_ENVIRONMENT", None)
 
