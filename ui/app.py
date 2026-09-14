@@ -38,7 +38,10 @@ _SPLASH_CORNER_RADIUS = 28
 # Matches utils.early_splash: caption under the GIF's own "Kiwi Down".
 _SPLASH_AGUARDE_Y_ALIGN = 0.87
 # Windows AppUserModelID so taskbar pins associate with Kiwi Down, not flet.exe.
-_APP_USER_MODEL_ID = "KiwiDown.App"
+try:
+    from utils.windows_aumid import APP_USER_MODEL_ID as _APP_USER_MODEL_ID
+except Exception:  # pragma: no cover - installer layout edge cases
+    _APP_USER_MODEL_ID = "KiwiDown.App"
 
 
 def _assets_dir() -> Path:
@@ -157,10 +160,19 @@ def _find_app_icon() -> Path | None:
 
 
 def _configure_windows_app_identity() -> None:
-    """Ask the Flet desktop client to use our AppUserModelID on Windows."""
+    """Ask the Flet desktop client to use our AppUserModelID on Windows.
+
+    Also (re)stamps the Start Menu shortcut so pinning uses the launcher,
+    not bare ``flet.exe`` (blank white window on relaunch).
+    """
     if sys.platform != "win32":
         return
-    os.environ.setdefault("FLET_APP_USER_MODEL_ID", _APP_USER_MODEL_ID)
+    try:
+        from utils.windows_aumid import ensure_windows_taskbar_identity
+
+        ensure_windows_taskbar_identity(_APP_USER_MODEL_ID)
+    except Exception:
+        os.environ.setdefault("FLET_APP_USER_MODEL_ID", _APP_USER_MODEL_ID)
 
 
 def _apply_window_icon(page: ft.Page) -> None:

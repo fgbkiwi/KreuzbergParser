@@ -350,6 +350,13 @@ $closeHelperLines = @(
 )
 [System.IO.File]::WriteAllLines($closeHelperPath, $closeHelperLines)
 
+# Helper used at install time to stamp AppUserModelID on the Start Menu shortcut
+# (prevents taskbar pins from targeting bare flet.exe -> white window).
+$aumidHelperPath = Join-Path $nsisDir "stamp_lnk_aumid.ps1"
+Copy-Item -LiteralPath (Join-Path $ScriptDir "scripts\stamp_lnk_aumid.ps1") `
+    -Destination $aumidHelperPath -Force
+
+
 if (-not (Test-Path $nsiPath)) {
     Write-Error "installer.nsi nao encontrado apos pynsist."
     exit 1
@@ -361,7 +368,7 @@ if ($productNameHits -ne 1) {
     Write-Error "installer.nsi invalido apos pynsist (PRODUCT_NAME x$productNameHits). Apague build\nsis e rode de novo."
     exit 1
 }
-if ($nsi.Contains("Get-CimInstance") -or $nsi.Contains("close_kiwi_down.ps1")) {
+if ($nsi.Contains("Get-CimInstance") -or $nsi.Contains("close_kiwi_down.ps1") -or $nsi.Contains("stamp_lnk_aumid.ps1")) {
     Write-Error "installer.nsi ja contem patch residual. Apague build\nsis\installer.nsi e rode de novo."
     exit 1
 }
@@ -420,6 +427,46 @@ if ($idx -lt 0) {
 $nsi = $nsi.Insert($idx, $inject)
 # Strip accidental KiwiDown.1.ico File lines if residual icon was copied.
 $nsi = [regex]::Replace($nsi, '(?m)^\s*File "KiwiDown\.\d+\.ico"\s*\r?\n', "")
+
+# After CreateShortCut, stamp AppUserModelID so taskbar pins use the launcher
+# instead of flet.exe (blank white window on relaunch).
+$aumidMarker = "; Kiwi Down: stamp AppUserModelID on Start Menu shortcut"
+if (-not $nsi.Contains($aumidMarker)) {
+    $shortcutNeedle = 'CreateShortCut "$SMPROGRAMS\Kiwi Down.lnk"'
+    $scIdx = $nsi.IndexOf($shortcutNeedle)
+    if ($scIdx -lt 0) {
+        Write-Error "Nao foi possivel localizar CreateShortCut do Kiwi Down no installer.nsi."
+        exit 1
+    }
+    # Insert after the full CreateShortCut statement (may span two lines with \).
+    $afterShortcut = $nsi.IndexOf("`n", $scIdx)
+    if ($afterShortcut -lt 0) {
+        Write-Error "CreateShortCut sem newline apos o comando."
+        exit 1
+    }
+    # If line continues with `\`, skip one more line.
+    $lineEnd = $nsi.Substring($scIdx, $afterShortcut - $scIdx)
+    if ($lineEnd.TrimEnd().EndsWith("\")) {
+        $afterShortcut = $nsi.IndexOf("`n", $afterShortcut + 1)
+        if ($afterShortcut -lt 0) {
+            Write-Error "CreateShortCut continuacao sem newline."
+            exit 1
+        }
+    }
+    $aumidInjectLines = @(
+        "  $aumidMarker"
+        '  DetailPrint "Configurando AppUserModelID do atalho (barra de tarefas)..."'
+        "  InitPluginsDir"
+        '  SetOutPath "$PLUGINSDIR"'
+        '  File "stamp_lnk_aumid.ps1"'
+        '  nsExec::ExecToLog ''powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\stamp_lnk_aumid.ps1" -LnkPath "$SMPROGRAMS\Kiwi Down.lnk" -Aumid "KiwiDown.App"'''
+        ""
+    )
+    $aumidInject = ($aumidInjectLines -join "`r`n") + "`r`n"
+    $nsi = $nsi.Insert($afterShortcut + 1, $aumidInject)
+    Write-Host "  Patch NSIS: AppUserModelID no atalho do menu Iniciar" -ForegroundColor Gray
+}
+
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($nsiPath, $nsi, $utf8NoBom)
 

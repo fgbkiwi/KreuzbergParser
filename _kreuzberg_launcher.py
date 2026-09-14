@@ -214,14 +214,24 @@ def _suppress_console_window() -> None:
 
 def main() -> None:
     base_dir = Path(__file__).resolve().parent
+    if str(base_dir) not in sys.path:
+        sys.path.insert(0, str(base_dir))
     _suppress_console_window()
     _isolate_from_user_site()
     _add_dll_directories(base_dir)
     # Writable home first so splash diagnostics land next to other app logs.
     log_dir = _set_writable_workdir()
-    # So the Flet desktop child uses our AppUserModelID (taskbar pin/grouping).
+    # Stamp Start Menu AppUserModelID + repair bare-flet taskbar pins so
+    # "Pin to taskbar" relaunches the Python launcher, not flet.exe alone
+    # (blank white window). Also sets FLET_APP_USER_MODEL_ID for the child.
     if sys.platform == "win32":
-        os.environ.setdefault("FLET_APP_USER_MODEL_ID", "KiwiDown.App")
+        try:
+            # Prefer bundled helper; fall back if pkgs layout differs.
+            from utils.windows_aumid import ensure_windows_taskbar_identity
+
+            ensure_windows_taskbar_identity()
+        except Exception:
+            os.environ.setdefault("FLET_APP_USER_MODEL_ID", "KiwiDown.App")
     # Show branding immediately — before Torch/Kreuzberg/Flet imports.
     close_early_splash = lambda: None  # noqa: E731 — replaced on success
     try:
