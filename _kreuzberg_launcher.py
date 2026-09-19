@@ -1,10 +1,12 @@
-"""Launcher resiliente para o instalador Pynsist."""
+"""Launcher resiliente para instaladores (Pynsist / .deb)."""
 
 from __future__ import annotations
 
 import importlib
 import os
 import runpy
+import shutil
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -103,10 +105,22 @@ def _add_dll_directories(base_dir: Path) -> None:
         os.environ["PATH"] = os.pathsep.join(path_prefix + ([current] if current else []))
 
 
+def _default_user_data_dir() -> Path:
+    """Writable per-user data root (logs, tessdata, cache)."""
+    if sys.platform == "win32":
+        local_appdata = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+        # Folder without spaces (matches existing Windows installs / docs).
+        return local_appdata / "KiwiDown"
+
+    xdg = (os.environ.get("XDG_DATA_HOME") or "").strip()
+    if xdg:
+        return Path(xdg) / "KreuzbergParser"
+    return Path.home() / ".local" / "share" / "KreuzbergParser"
+
+
 def _set_writable_workdir() -> Path:
-    """Usa pasta do usuário para logs/cache em vez de Program Files."""
-    local_appdata = Path(os.environ.get("LOCALAPPDATA") or Path.home())
-    app_dir = local_appdata / "KiwiDown"
+    """Usa pasta do usuário para logs/cache em vez de Program Files / /opt."""
+    app_dir = _default_user_data_dir()
     app_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("KREUZBERG_PARSER_HOME", str(app_dir))
     # Compatibilidade com instalacoes antigas / docs.
@@ -116,12 +130,43 @@ def _set_writable_workdir() -> Path:
 
 
 def _show_error_dialog(message: str) -> None:
-    try:
-        import ctypes
+    if sys.platform == "win32":
+        try:
+            import ctypes
 
-        ctypes.windll.user32.MessageBoxW(0, message, APP_NAME, 0x10)
-    except Exception:
-        pass
+            ctypes.windll.user32.MessageBoxW(0, message, APP_NAME, 0x10)
+        except Exception:
+            pass
+        return
+
+    # Linux / desktop environments: prefer zenity, then kdialog.
+    if shutil.which("zenity"):
+        try:
+            subprocess.run(
+                [
+                    "zenity",
+                    "--error",
+                    "--title",
+                    APP_NAME,
+                    "--width=480",
+                    "--text",
+                    message,
+                ],
+                check=False,
+            )
+            return
+        except OSError:
+            pass
+
+    if shutil.which("kdialog"):
+        try:
+            subprocess.run(
+                ["kdialog", "--error", message, "--title", APP_NAME],
+                check=False,
+            )
+            return
+        except OSError:
+            pass
 
 
 def _resolve_app_main(base_dir: Path):
@@ -260,6 +305,16 @@ def main() -> None:
     except Exception:
         pass
 
+    # Linux: GTK/zenity splash (Windows already has utils.early_splash above).
+    close_splash = None
+    if sys.platform != "win32":
+        try:
+            from utils.startup_splash import close_splash, show_splash
+
+            show_splash(base_dir)
+        except Exception:
+            close_splash = None
+
     try:
         app_main = _resolve_app_main(base_dir)
         app_main()
@@ -268,6 +323,11 @@ def main() -> None:
             close_early_splash()
         except Exception:
             pass
+        if close_splash is not None:
+            try:
+                close_splash()
+            except Exception:
+                pass
         err = traceback.format_exc()
         log_path = log_dir / "startup_error.log"
         log_path.write_text(err, encoding="utf-8")

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Wrapper instalado em /usr/bin/kreuzberg-parser
+set -euo pipefail
+
+OPT_ROOT="/opt/kreuzberg-parser"
+APP_DIR="${OPT_ROOT}/app"
+VENV_PYTHON="${OPT_ROOT}/venv/bin/python"
+LAUNCHER="${APP_DIR}/_kreuzberg_launcher.py"
+
+if [[ -z "${KREUZBERG_PARSER_HOME:-}" ]]; then
+  if [[ -n "${XDG_DATA_HOME:-}" ]]; then
+    export KREUZBERG_PARSER_HOME="${XDG_DATA_HOME}/KreuzbergParser"
+  else
+    export KREUZBERG_PARSER_HOME="${HOME}/.local/share/KreuzbergParser"
+  fi
+fi
+mkdir -p "${KREUZBERG_PARSER_HOME}"
+
+if [[ ! -x "${VENV_PYTHON}" ]]; then
+  echo "error: Python do KreuzbergParser não encontrado em ${VENV_PYTHON}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${LAUNCHER}" ]]; then
+  echo "error: launcher não encontrado em ${LAUNCHER}" >&2
+  exit 1
+fi
+
+exec "${VENV_PYTHON}" "${LAUNCHER}" "$@"

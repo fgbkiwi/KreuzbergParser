@@ -50,6 +50,9 @@ KreuzbergParser/
 │   ├── start_nemotron_parse.sh
 │   └── install_cuda_toolkit.sh
 │
+├── packaging/linux/             # Templates do .deb (desktop, wrapper, splash.py, maintainer scripts)
+├── build_kreuzberg_parser_deb.sh
+│
 ├── vendor/wheels/               # kreuzberg-*-ort-dynamic.whl
 │
 ├── logs/                        # {CNJ}_ocr_{modo}_{modelo}_*.log

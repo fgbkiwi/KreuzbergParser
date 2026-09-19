@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=KreuzbergParser
+GenericName=OCR para PDFs judiciais
+Comment=OCR inteligente para PDFs judiciais trabalhistas (PJe)
+Exec=kreuzberg-parser
+Icon=kreuzberg-parser
+Terminal=false
+Categories=Office;Graphics;
+Keywords=OCR;PDF;PJe;Kreuzberg;
+MimeType=application/pdf;
+StartupNotify=true
