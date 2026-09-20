@@ -1132,7 +1132,9 @@ class OCRApp:
         self.log_message("📝 Gerando arquivo Markdown...")
         converter = MarkdownConverter(self.config)
         run_suffix = self._get_run_suffix()
-        output_filename = f"{Path(pdf_path).stem}_ocr_{run_suffix}.md"
+        # Windows não permite ':' em nomes de arquivo; HH:MM:SS → HH-MM-SS.
+        dt_suffix = time.strftime("%Y-%m-%d_%H-%M-%S")
+        output_filename = f"{Path(pdf_path).stem}_ocr_{run_suffix}_{dt_suffix}.md"
         output_path = Path(output_folder) / output_filename
         md_path = converter.convert_to_markdown(result, str(output_path))
         self.log_message(f"✅ Markdown salvo: {md_path}", ft.Colors.GREEN)
