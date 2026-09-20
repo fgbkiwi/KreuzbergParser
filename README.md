@@ -388,7 +388,45 @@ Fonte única da versão: `APP_VERSION` em `main.py` (inicia em **1.0.0**).
 
 ---
 
+## 📦 Instalador Linux (.deb — Pop!_OS / Ubuntu)
 
+Para usuários finais: baixe o `.deb` amd64 em
+[Releases](https://github.com/fgbkiwi/KreuzbergParser/releases/latest) e instale:
+
+```bash
+sudo apt install ./KreuzbergParser_x.y.z_amd64.deb
+```
+
+O apt resolve as dependências do sistema (`tesseract-ocr`, `tesseract-ocr-por`,
+`poppler-utils`, GTK/GStreamer/mpv para o Flet, `python3-gi` para a splash de
+inicialização). Atalho: menu de aplicativos → **KreuzbergParser**. Dados
+graváveis: `~/.local/share/KreuzbergParser`.
+
+Na abertura, o launcher mostra uma splash (logo + “Iniciando…”) enquanto o
+stack CUDA/Kreuzberg carrega; a janela some quando a UI Flet fica pronta.
+
+- **Express / CPU**: funcionam sem GPU.
+- **GPU** (EasyOCR / PaddleOCR): driver NVIDIA atualizado (`nvidia-smi`). O wheel
+  do PyTorch traz o runtime CUDA — toolkit de desenvolvimento **não** é necessário.
+
+Para mantenedores (build **no Linux**, Pop!_OS ou Ubuntu 24.04; `gh` se for publicar):
+
+```bash
+./scripts/update_deps.sh --sync --cuda cu130
+./scripts/build_kreuzberg_gpu.sh                  # wheel ort-dynamic em vendor/wheels/
+./build_kreuzberg_parser_deb.sh --no-publish      # gera build/deb/KreuzbergParser_x.y.z_amd64.deb
+./build_kreuzberg_parser_deb.sh                   # mesma versão + anexa .deb à Release vX.Y.Z
+./build_kreuzberg_parser_deb.sh --bump patch      # bump + .deb + publish
+```
+
+O build do `.deb` roda `scripts/check_dep_conflicts.py` e um smoke test
+(`import cv2`, `torch`, `kreuzberg`) no venv de staging antes de empacotar.
+
+Por padrão o script **não** faz bump (para anexar o `.deb` à mesma tag `vX.Y.Z`
+do instalador Windows). O pacote instala CPython 3.12 + venv CUDA em
+`/opt/kreuzberg-parser` (arquivo grande, como o `.exe` Windows).
+
+---
 
 ## 🚀 Uso
 
@@ -437,10 +475,12 @@ KreuzbergParser/
 │
 ├── main.py                      # Entry point (+ APP_VERSION)
 ├── config.py                    # Configuração (modos, VLM, templates)
-├── _kreuzberg_launcher.py       # Entry point do instalador Pynsist
+├── _kreuzberg_launcher.py       # Entry point dos instaladores (Pynsist / .deb)
 ├── kreuzberg_parser_pynsist.cfg # Config Pynsist
 ├── bump_version.py              # Bump major.minor.patch
-├── build_kreuzberg_parser_pynsist.ps1
+├── build_kreuzberg_parser_pynsist.ps1  # Instalador Windows
+├── build_kreuzberg_parser_deb.sh       # Instalador Linux (.deb)
+├── packaging/linux/             # desktop, wrapper, splash.py, postinst/postrm
 ├── requirements.in              # Dependências diretas (editar aqui)
 ├── requirements.txt             # Lockfile com pins (Linux; gerado por update_deps.sh)
 ├── pyproject.toml               # Metadados / versão
@@ -457,10 +497,11 @@ KreuzbergParser/
 │   └── markdown_converter.py   # Conversão para Markdown
 │
 ├── ui/app.py                    # Interface Flet (updates no loop da sessão)
-├── utils/                       # GPU, logging, tessdata, páginas PDF, flet_ui
+├── utils/                       # GPU, logging, tessdata, splash, páginas PDF, flet_ui
 ├── scripts/
 │   ├── update_deps.sh           # Linux: resolve + sync lockfile
 │   ├── update_deps.ps1          # Windows: torch CUDA + requirements.in
+│   ├── build_kreuzberg_gpu.sh   # wheel Kreuzberg ort-dynamic
 │   ├── setup_nemotron_venv.sh
 │   ├── start_nemotron_parse.sh
 │   ├── install_cuda_toolkit.sh

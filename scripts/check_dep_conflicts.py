@@ -140,10 +140,16 @@ def main() -> int:
 
     for name in sorted(linux_only_hints):
         if name in installed:
-            emit(
-                "FAIL",
-                f"installed Linux-only package {name} — remove it on Windows",
-            )
+            if sys.platform == "win32":
+                emit(
+                    "FAIL",
+                    f"installed Linux-only package {name} — remove it on Windows",
+                )
+            else:
+                emit(
+                    "WARN",
+                    f"Linux-only package {name} present (expected on Linux CUDA stacks)",
+                )
 
     opencv_present = sorted({name for name in opencv_names if name in installed})
     if len(opencv_present) > 1:

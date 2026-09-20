@@ -80,8 +80,9 @@ def _package_dir() -> Path:
 def _data_dir() -> Path:
     """Writable data root (tessdata, poppler, logs, temp, output).
 
-    When installed via Pynsist under Program Files, set
-    ``KREUZBERG_PARSER_HOME`` (e.g. ``%LOCALAPPDATA%\\KreuzbergParser``).
+    When installed under a read-only prefix (Program Files / ``/opt``), set
+    ``KREUZBERG_PARSER_HOME`` (Windows: ``%LOCALAPPDATA%\\KreuzbergParser``;
+    Linux: ``~/.local/share/KreuzbergParser``).
     """
     override = (os.environ.get("KREUZBERG_PARSER_HOME") or "").strip()
     if override:

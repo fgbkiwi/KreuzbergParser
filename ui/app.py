@@ -1424,6 +1424,12 @@ def run_app():
         page.window.focused = True
         page.update()
         close_early_splash()
+        try:
+            from utils.startup_splash import close_splash
+
+            close_splash()
+        except Exception:
+            pass
 
     # Hidden until main() reveals the window with content painted.
     ft.app(target=main, assets_dir=assets, view=ft.AppView.FLET_APP_HIDDEN)
