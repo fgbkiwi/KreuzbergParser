@@ -731,6 +731,7 @@ class OCRApp:
 
         existing = set(self.pdf_queue)
         added = 0
+        first_added_dir: str | None = None
         for f in files:
             if not f.path:
                 continue
@@ -741,9 +742,15 @@ class OCRApp:
                 continue
             self.pdf_queue.append(path)
             existing.add(path)
+            if first_added_dir is None:
+                first_added_dir = str(Path(path).parent)
             added += 1
 
         if added:
+            if first_added_dir:
+                self.output_folder = first_added_dir
+                self.output_folder_field.value = self.output_folder
+                self._update_process_button()
             self._refresh_queue_list()
             self._patch_page()
 
