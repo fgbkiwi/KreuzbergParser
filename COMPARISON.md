@@ -71,7 +71,7 @@ opencv-python==4.8.1.78
 numpy==1.24.3
 Pillow==10.1.0
 pytesseract==0.3.10
-easyocr==1.7.0
+rapidocr
 torch==2.1.0
 torchvision==0.16.0
 transformers==4.35.0
@@ -86,7 +86,7 @@ psutil==5.9.6
 ```
 kreuzberg==0.6.0          # ← Substitui 7 bibliotecas acima
 pytesseract==0.3.10       # Backend OCR
-easyocr==1.7.0            # OCR GPU via PyTorch
+rapidocr            # OCR GPU via PyTorch
 torch==2.1.0              # Apenas para TrOCR opcional
 torchvision==0.16.0       # Apenas para TrOCR opcional
 transformers==4.35.0      # Apenas para TrOCR opcional

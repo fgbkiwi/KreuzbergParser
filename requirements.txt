@@ -16,8 +16,8 @@ certifi==2026.7.22
     #   httpx
 click==8.4.2
     # via huggingface-hub
-easyocr==1.7.2
-    # via -r /tmp/update_deps.iynUFA/base.in
+rapidocr==3.9.2
+    # via -r requirements.in  (regenerate fully with ./scripts/update_deps.sh)
 filelock==3.32.3
     # via
     #   -c /tmp/update_deps.iynUFA/base.constraints.txt

@@ -76,9 +76,9 @@ Otimizado para **PDFs gerados pelo PJe-JT**: cabeçalhos e rodapés de petiçõe
 
 
 
-#### 🚀 **GPU - EasyOCR CUDA**
+#### 🚀 **GPU - RapidOCR CUDA**
 
-- EasyOCR GPU-accelerated
+- RapidOCR GPU-accelerated (PP-OCR ONNX + onnxruntime-gpu)
 - TrOCR para texto manuscrito (opcional)
 - Máxima acurácia
 - **~1-2 páginas/segundo**
@@ -274,11 +274,11 @@ python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
 
 
-## 🧩 GPU Setup (EasyOCR + TrOCR + PaddleOCR GPU)
+## 🧩 GPU Setup (RapidOCR + TrOCR + PaddleOCR GPU)
 
 Guia atual (RTX 50 / cu130, PaddleOCR nativo, Nemotron, Ollama): `[GPU_SETUP.md](GPU_SETUP.md)`.
 
-O modo **EasyOCR GPU** usa PyTorch no `.venv`. O modo **PaddleOCR GPU** usa o Kreuzberg nativo (`AccelerationConfig(provider="cuda")`) com o wheel local `ort-dynamic` e `onnxruntime-gpu` — sem fallback para o pacote Python `paddleocr`. Você precisa de:
+O modo **RapidOCR GPU** usa `rapidocr` + `onnxruntime-gpu` no `.venv`. O modo **PaddleOCR GPU** usa o Kreuzberg nativo (`AccelerationConfig(provider="cuda")`) com o wheel local `ort-dynamic` e `onnxruntime-gpu` — sem fallback para o pacote Python `paddleocr`. Você precisa de:
 
 - Driver NVIDIA atualizado
 - PyTorch `+cu130` (Blackwell / `sm_120`)
@@ -336,7 +336,7 @@ transformers
 ```
 
 Pacotes como `numpy` e `pillow` também ficam na versão resolvida naquele momento, embora
-`easyocr`, `transformers` e outros consumidores aceitem faixas mais amplas.
+`rapidocr`, `transformers` e outros consumidores aceitem faixas mais amplas.
 
 ### `uv pip list --outdated` — versões “desatualizadas”
 
@@ -406,7 +406,7 @@ Na abertura, o launcher mostra uma splash (logo + “Iniciando…”) enquanto o
 stack CUDA/Kreuzberg carrega; a janela some quando a UI Flet fica pronta.
 
 - **Express / CPU**: funcionam sem GPU.
-- **GPU** (EasyOCR / PaddleOCR): driver NVIDIA atualizado (`nvidia-smi`). O wheel
+- **GPU** (RapidOCR / PaddleOCR): driver NVIDIA atualizado (`nvidia-smi`). O wheel
   do PyTorch traz o runtime CUDA — toolkit de desenvolvimento **não** é necessário.
 
 Para mantenedores (build **no Linux**, Pop!_OS ou Ubuntu 24.04; `gh` se for publicar):
@@ -451,7 +451,7 @@ A interface gráfica será aberta automaticamente.
 3. **Escolher Modo**:
   - ⚡ Express (Rápido) - Tesseract 200 DPI
   - 💻 CPU - Tesseract 300 DPI + tabelas
-  - 🚀 GPU - EasyOCR CUDA
+  - 🚀 GPU - RapidOCR CUDA
 4. **VLM fallback** (formulários / tabelas): Desligado, Qwen2.5-VL (Ollama) ou Nemotron Parse (vLLM)
 5. **Opções**:
   - ✅ Gerar Markdown (recomendado)
@@ -526,7 +526,7 @@ PDF → Kreuzberg Engine → Detecção Automática
     Nativo                       Escaneado
         │                             │
     Extração                      OCR + templates
-    Direta                      (Tesseract/EasyOCR)
+    Direta                      (Tesseract/RapidOCR)
         │                             │
         └──────────────┬──────────────┘
                        ↓

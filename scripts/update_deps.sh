@@ -174,9 +174,9 @@ req_re = re.compile(
 paddle_forbidden = {
     "paddlepaddle",
     "paddlepaddle-gpu",
-    "rapidocr",
     "paddleocr",
     "paddlex",
+    "easyocr",
 }
 torch_names = {"torch", "torchvision", "torchaudio"}
 fails = 0
@@ -290,7 +290,7 @@ for name in sorted(paddle_forbidden):
             "o Kreuzberg nativo + onnxruntime-gpu",
         )
 
-# OpenCV: exactly one cv2 provider (opencv-python-headless, via easyocr).
+# OpenCV: exactly one cv2 provider (opencv-python-headless, via RapidOCR).
 opencv_names = (
     "opencv-python",
     "opencv-python-headless",
@@ -460,7 +460,7 @@ if [[ ! -s "$TORCH_IN" ]]; then
   printf '%s\n' "${TORCH_PKGS[@]}" > "$TORCH_IN"
 fi
 
-# Keep easyocr/transformers from pinning PyPI torch during the base solve.
+# Keep transformers from pinning PyPI torch during the base solve.
 cat > "$EXCLUDE_TORCH" <<'EOF'
 torch
 torchvision

@@ -20,7 +20,10 @@ paddle_forbidden = {
     "paddlex",
     "paddlepaddle",
     "paddlepaddle-gpu",
-    "rapidocr",
+}
+# RapidOCR is the ProcessingMode.GPU engine (onnxruntime-gpu). Keep EasyOCR out.
+legacy_ocr_forbidden = {
+    "easyocr",
 }
 torch_names = {"torch", "torchvision", "torchaudio"}
 linux_only_hints = {
@@ -136,6 +139,14 @@ def main() -> int:
                 "FAIL",
                 f"installed package {name} — uninstall; PaddleOCR GPU uses Kreuzberg "
                 "ort-dynamic + onnxruntime-gpu only",
+            )
+
+    for name in sorted(legacy_ocr_forbidden):
+        if name in installed:
+            emit(
+                "FAIL",
+                f"installed package {name} — uninstall; GPU mode uses RapidOCR + "
+                "onnxruntime-gpu (not EasyOCR)",
             )
 
     for name in sorted(linux_only_hints):

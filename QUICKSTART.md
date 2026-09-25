@@ -37,7 +37,7 @@ Quando executar `.venv/bin/python main.py`, a interface gráfica abrirá automat
 3. **Modo de Processamento**:
    - ⚡ **Express (Rápido) - Tesseract 200 DPI** — teste rápido
    - 💻 **CPU - Tesseract 300 DPI + tabelas** — documentos complexos sem GPU
-   - 🚀 **GPU - EasyOCR CUDA** — se o Status GPU indicar NVIDIA
+   - 🚀 **GPU - RapidOCR CUDA** — se o Status GPU indicar NVIDIA
 4. **VLM fallback**: Desligado, Qwen2.5-VL (Ollama) ou Nemotron Parse (vLLM)
 5. **Processar**: Clique em "🚀 PROCESSAR PDF"
 6. **Resultado**: `{stem}_ocr_{modo}_{modelo}.md` (ex. `_ocr_gpu_nemotron.md`)
@@ -102,7 +102,7 @@ brew install tesseract tesseract-lang
    ./scripts/update_deps.sh --sync --cuda cu130
    ```
 
-> O modo GPU usa EasyOCR + TrOCR via PyTorch. O CUDA Toolkit (`nvcc`) **não** é necessário
+> O modo GPU usa RapidOCR (onnxruntime-gpu) + TrOCR via PyTorch. O CUDA Toolkit (`nvcc`) **não** é necessário
 > para o KreuzbergParser. Só o servidor Nemotron Parse (vLLM/FlashInfer) precisa de
 > `./scripts/install_cuda_toolkit.sh`. Ver [`GPU_SETUP.md`](GPU_SETUP.md).
 

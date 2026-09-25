@@ -17,7 +17,7 @@ Orientação atual de GPU: [`GPU_SETUP.md`](../GPU_SETUP.md).
 
 ### 1. Nunca instalar `torch` do PyPI (CPU) junto com o índice CUDA
 
-O wheel padrão no PyPI é **CPU** (`+cpu` ou sem `+cuXXX`). Se ele entrar no ambiente ao mesmo tempo que builds CUDA (`+cu130`), EasyOCR/TrOCR podem cair em CPU ou quebrar imports.
+O wheel padrão no PyPI é **CPU** (`+cpu` ou sem `+cuXXX`). Se ele entrar no ambiente ao mesmo tempo que builds CUDA (`+cu130`), TrOCR (e o restante do stack PyTorch) podem cair em CPU ou quebrar imports.
 
 - Resolver/instalar `torch` / `torchvision` **só** a partir do índice PyTorch CUDA.
 - Use `./scripts/update_deps.sh` (Linux) ou `.\scripts\update_deps.ps1` (Windows)
@@ -25,25 +25,27 @@ O wheel padrão no PyPI é **CPU** (`+cpu` ou sem `+cuXXX`). Se ele entrar no am
 
 ### 2. Nenhum pacote Python do ecossistema Paddle no venv
 
-`paddleocr`, `paddlex`, `paddlepaddle`, `paddlepaddle-gpu` e `rapidocr` são **proibidos**.
+`paddleocr`, `paddlex`, `paddlepaddle` e `paddlepaddle-gpu` são **proibidos**.  
+`easyocr` também é **proibido** (substituído pelo modo GPU com RapidOCR).
 
+O modo **GPU** usa **RapidOCR** + `onnxruntime-gpu` (PP-OCR ONNX em CUDA).  
 O modo **PaddleOCR GPU** usa exclusivamente o Kreuzberg nativo: wheel local compilado com `ort-dynamic` (`./scripts/build_kreuzberg_gpu.sh`) + `AccelerationConfig(provider="cuda")` + `ORT_DYLIB_PATH` apontando para a lib do `onnxruntime-gpu`. O wheel do PyPI empacota ORT só-CPU e ignora `ORT_DYLIB_PATH` — por isso a instalação real vem de `vendor/wheels/`. Se o CUDA não carregar, o modo **falha** — não há fallback.
 
 ```bash
-# Pacotes Paddle / RapidOCR (proibidos):
-uv pip uninstall paddleocr paddlex paddlepaddle paddlepaddle-gpu rapidocr
+# Pacotes Paddle / EasyOCR (proibidos):
+uv pip uninstall paddleocr paddlex paddlepaddle paddlepaddle-gpu easyocr
 ```
 
 ### 3. Um único pacote OpenCV (`cv2`)
 
 Vários wheels (`opencv-python`, `opencv-python-headless`, `opencv-contrib-python`) fornecem o módulo `cv2`. Ter dois no mesmo venv causa imports imprevisíveis.
 
-- Manter apenas **`opencv-python-headless`** (dependência do EasyOCR)
+- Manter apenas **`opencv-python-headless`** (dependência do RapidOCR)
 - Evitar: `opencv-python` (GUI) e variantes `contrib` em paralelo
 
 ### 4. Toolkit CUDA do sistema: só se for compilar kernels (vLLM / FlashInfer)
 
-O wheel do PyTorch **já traz** o runtime CUDA. O KreuzbergParser (EasyOCR/TrOCR)
+O wheel do PyTorch **já traz** o runtime CUDA. O KreuzbergParser (RapidOCR/TrOCR)
 **não** precisa de `nvcc`. Exceção: o servidor Nemotron Parse (vLLM + FlashInfer JIT)
 precisa do **CUDA Toolkit 13.0**, sem trocar o driver Pop!_OS:
 
@@ -61,7 +63,7 @@ No índice PyTorch, builds CUDA para CPython novo costumam demorar. O `update_de
 ### 6. Não misturar vLLM / Nemotron Parse no `.venv` do OCR
 
 O servidor Nemotron Parse usa **`.venv-nemotron`** (`scripts/setup_nemotron_venv.sh`).
-vLLM puxa outra pinagem de PyTorch/transformers e quebra EasyOCR/TrOCR se entrar no `.venv` principal.
+vLLM puxa outra pinagem de PyTorch/transformers e quebra TrOCR se entrar no `.venv` principal.
 
 ### 7. `TESSDATA_PREFIX` do projeto vs Tesseract do sistema
 
@@ -98,7 +100,7 @@ não existir, gere-o com `./scripts/build_kreuzberg_gpu.sh`.
 .\scripts\update_deps.ps1 -Cuda cu130    # índice PyTorch (padrão)
 ```
 
-O script remove pacotes Paddle/RapidOCR / `nvidia-cufile*` se aparecerem e
+O script remove pacotes Paddle/EasyOCR / `nvidia-cufile*` se aparecerem e
 normaliza OpenCV para um único provedor `cv2` (`opencv-python-headless`).
 
 Verificação periódica (aviso apenas, sem upgrade): `scripts/check_updates.py` — chamado de forma não bloqueante em `main.py`.

@@ -1,6 +1,6 @@
-# GPU Setup (EasyOCR / TrOCR / PaddleOCR GPU)
+# GPU Setup (RapidOCR / TrOCR / PaddleOCR GPU)
 
-EasyOCR e TrOCR usam o **wheel CUDA do PyTorch**.  
+TrOCR usa o **wheel CUDA do PyTorch**. RapidOCR (modo GPU) usa **onnxruntime-gpu**.  
 PaddleOCR **CPU** usa o backend nativo do Kreuzberg (`AccelerationConfig(provider="cpu")`).  
 PaddleOCR **GPU** segue a documentação do Kreuzberg: `AccelerationConfig(provider="cuda")` + `onnxruntime-gpu` + `ORT_DYLIB_PATH`, usando o wheel local compilado com `ort-dynamic` (`./scripts/build_kreuzberg_gpu.sh`). Sem fallbacks: se o CUDA nativo não inicializar, o modo falha com diagnóstico.  
 Conflitos: [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md).
@@ -44,7 +44,8 @@ Expect something like `2.13.0+cu130`, `CUDA: True`, and your RTX 50 GPU name.
 
 - **`+cpu` torch** — reinstall via the cu130 index / `update_deps.sh` (never mix PyPI CPU torch with CUDA).
 - **Python ≥ 3.13** — CUDA wheels often lag; recreate the venv on 3.12.
-- **Paddle (qualquer pacote Python)** — uninstall `paddleocr`, `paddlex`, `paddlepaddle`, `paddlepaddle-gpu` e `rapidocr`. O PaddleOCR roda exclusivamente pelo Kreuzberg nativo; nenhum pacote Paddle deve existir no venv.
+- **Paddle (qualquer pacote Python)** — uninstall `paddleocr`, `paddlex`, `paddlepaddle`, `paddlepaddle-gpu`. O PaddleOCR nativo roda pelo Kreuzberg; o modo GPU separado usa `rapidocr` + `onnxruntime-gpu`.
+- **EasyOCR** — uninstall `easyocr` (substituído por RapidOCR no modo GPU).
 - **OpenCV** — keep **one** `cv2` (`opencv-python-headless`).
 - **Sandbox / restricted env** — `torch.cuda` may fail inside Cursor sandbox while `nvidia-smi` works on the host; test outside the sandbox.
 
@@ -72,7 +73,7 @@ python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 # Deve incluir CUDAExecutionProvider
 ```
 
-**Importante:** o wheel do PyPI (4.10.2) é compilado com `ort-bundled` — linka um ONNX Runtime só-CPU embutido, ignora `ORT_DYLIB_PATH` e o crate `ort` descarta o registro do CUDA EP em tempo de compilação. Por isso este projeto usa um **wheel local compilado com `ort-dynamic`** (`./scripts/build_kreuzberg_gpu.sh`, salvo em `vendor/wheels/`), que carrega em runtime a lib do `onnxruntime-gpu` via `ORT_DYLIB_PATH` e executa o PaddleOCR nativo em CUDA de verdade. Sem esse wheel, o modo PaddleOCR GPU **falha na inicialização** (não há fallback). Não instale `paddleocr`, `paddlepaddle-gpu` nem `rapidocr`.
+**Importante:** o wheel do PyPI (4.10.2) é compilado com `ort-bundled` — linka um ONNX Runtime só-CPU embutido, ignora `ORT_DYLIB_PATH` e o crate `ort` descarta o registro do CUDA EP em tempo de compilação. Por isso este projeto usa um **wheel local compilado com `ort-dynamic`** (`./scripts/build_kreuzberg_gpu.sh`, salvo em `vendor/wheels/`), que carrega em runtime a lib do `onnxruntime-gpu` via `ORT_DYLIB_PATH` e executa o PaddleOCR nativo em CUDA de verdade. Sem esse wheel, o modo PaddleOCR GPU **falha na inicialização** (não há fallback). Não instale `paddleocr` nem `paddlepaddle-gpu` (o modo GPU usa `rapidocr` de propósito).
 
 Na RTX 5060 Ti (16 GB) o modo GPU usa `model_tier=server`, `padding=16`, lote de 8 páginas e `rec_batch_num=16`.
 
@@ -170,7 +171,7 @@ no `PATH` (o JIT precisa do `ninja` do venv). Sem toolkit, cai no sampler Triton
 O script usa `--gpu-memory-utilization 0.70` (o padrão do vLLM é 0.92 e falha na RTX 16GB se o desktop já ocupar ~1 GiB). Ajuste se precisar:
 
 ```bash
-NEMOTRON_GPU_MEM=0.60 ./scripts/start_nemotron_parse.sh   # mais folga p/ EasyOCR
+NEMOTRON_GPU_MEM=0.60 ./scripts/start_nemotron_parse.sh   # mais folga p/ RapidOCR
 NEMOTRON_GPU_MEM=0.85 ./scripts/start_nemotron_parse.sh   # só Nemotron, sem OCR GPU
 ```
 

@@ -115,7 +115,7 @@ class KreuzbergOCREngine:
                     % message
                 )
             self._init_paddle_gpu()
-        elif is_gpu_mode(mode):
+        elif mode == ProcessingMode.GPU:
             is_suitable, message = gpu_detector.is_gpu_suitable(self.config.MIN_VRAM_GB)
             if not is_suitable:
                 logger.warning(
@@ -125,6 +125,8 @@ class KreuzbergOCREngine:
                 )
                 self.mode = ProcessingMode.CPU
                 self.mode_config = self.config.get_mode_config(ProcessingMode.CPU)
+            else:
+                self._init_rapid_ocr()
 
         logger.info("Kreuzberg OCR Engine initialized in %s mode", self.mode)
         logger.info("Backend: %s", self.mode_config.get("backend", "tesseract"))
@@ -869,14 +871,23 @@ class KreuzbergOCREngine:
         ):
             return self._paddle_gpu.ocr_png_bytes(png_bytes)
 
-        extraction_config, easyocr_kwargs = self._build_extraction_config(
+        if (
+            not force_tesseract
+            and self.mode_config.get("backend") == "rapidocr"
+        ):
+            from core.rapid_ocr import ocr_png_bytes as rapid_ocr_png
+
+            return rapid_ocr_png(
+                png_bytes,
+                rec_batch_num=self._adaptive_rec_batch_num(),
+            )
+
+        extraction_config, _extra_kwargs = self._build_extraction_config(
             force_ocr=True,
             prefer_tables=prefer_tables or bool(form_kind in FORM_KINDS),
             force_tesseract=force_tesseract,
         )
         kwargs: dict[str, Any] = {"config": extraction_config}
-        if easyocr_kwargs is not None and not force_tesseract:
-            kwargs["easyocr_kwargs"] = easyocr_kwargs
 
         result = kreuzberg.extract_bytes_sync(png_bytes, mime_type, **kwargs)
         return self._ocr_result_tuple(result)
@@ -901,7 +912,6 @@ class KreuzbergOCREngine:
             language, language
         )
 
-        easyocr_kwargs = None
         use_gpu = bool(self.mode_config.get("use_gpu", False)) and not force_tesseract
 
         ocr_config = None
@@ -958,10 +968,10 @@ class KreuzbergOCREngine:
                 language=language,
                 paddle_ocr_config=paddle_cfg,
             )
-        elif backend == "easyocr":
-            ocr_config = kreuzberg.OcrConfig(backend="easyocr", language=language)
-            if use_gpu:
-                easyocr_kwargs = {"use_gpu": True}
+        elif backend == "rapidocr":
+            # RapidOCR runs outside Kreuzberg (core.rapid_ocr); keep a
+            # tesseract stub only for callers that still need ExtractionConfig.
+            ocr_config = kreuzberg.OcrConfig(backend="tesseract", language=language)
 
         language_detection = kreuzberg.LanguageDetectionConfig(
             enabled=self.config.KREUZBERG_LANGUAGE_DETECTION
@@ -982,12 +992,6 @@ class KreuzbergOCREngine:
                 )
             else:
                 acceleration = kreuzberg.AccelerationConfig(provider="cpu")
-        elif use_gpu and backend == "easyocr":
-            acceleration = kreuzberg.AccelerationConfig(
-                provider="cuda",
-                device_id=self._cuda_device_id(),
-            )
-
         # LayoutDetectionConfig / EmbeddingConfig exist in Kreuzberg and accept
         # `acceleration`, but this pipeline does not enable layout detection or
         # embeddings — only ExtractionConfig.acceleration is set (PaddleOCR).
@@ -1001,7 +1005,7 @@ class KreuzbergOCREngine:
             force_ocr=force_ocr or self.mode_config.get("force_ocr", False),
             acceleration=acceleration,
         )
-        return config, easyocr_kwargs
+        return config, None
 
     def _device_library_for_class(self, page_class: str) -> tuple[str, str]:
         if page_class == "native":
@@ -1020,8 +1024,8 @@ class KreuzbergOCREngine:
         if force_tesseract:
             return "kreuzberg+tesseract"
         backend = self.mode_config.get("backend", "tesseract")
-        if backend == "easyocr":
-            return "kreuzberg+easyocr"
+        if backend == "rapidocr":
+            return "rapidocr+onnxruntime-gpu"
         if backend == "paddleocr":
             if self.mode == ProcessingMode.PADDLE_GPU:
                 if self._paddle_gpu is not None:
@@ -1029,6 +1033,25 @@ class KreuzbergOCREngine:
                 return "kreuzberg+paddleocr+cuda"
             return "kreuzberg+paddleocr"
         return "kreuzberg+tesseract"
+
+    def _init_rapid_ocr(self) -> None:
+        """Warm up RapidOCR + onnxruntime-gpu CUDA (ProcessingMode.GPU)."""
+        from core.rapid_ocr import get_rapid_ocr_engine
+        from utils.ort_runtime import prepare_paddle_gpu_runtime
+
+        if not prepare_paddle_gpu_runtime():
+            raise RuntimeError(
+                "RapidOCR GPU falhou: onnxruntime-gpu não expõe CUDAExecutionProvider. "
+                "Instale com: uv pip install onnxruntime-gpu>=1.27. "
+                "No Windows use o modo GPU (RapidOCR); veja GPU_SETUP.md."
+            )
+        rec_batch = self._adaptive_rec_batch_num()
+        get_rapid_ocr_engine(rec_batch_num=rec_batch)
+        logger.info(
+            "RapidOCR GPU pronto (PP-OCRv5 latin + onnxruntime-gpu CUDA, "
+            "rec_batch_num=%s)",
+            rec_batch,
+        )
 
     def _init_paddle_gpu(self) -> None:
         """Ensure Kreuzberg native PaddleOCR runs on CUDA; GPU is mandatory."""
@@ -1112,7 +1135,7 @@ class KreuzbergOCREngine:
         )
         lines = [
             "PaddleOCR GPU recusado: o Kreuzberg nativo não aceitou CUDA.",
-            "Este modo não usa fallback — corrija o ambiente ou use PaddleOCR CPU / EasyOCR GPU.",
+            "Este modo não usa fallback — corrija o ambiente ou use PaddleOCR CPU / RapidOCR GPU.",
             "",
             f"Exceção: {type(exc).__name__ if exc else 'desconhecida'}: {exc}",
             f"Kreuzberg: {kreuzberg_ver}",
@@ -1132,7 +1155,7 @@ class KreuzbergOCREngine:
             "(scripts/build_kreuzberg_gpu.sh no Linux), onnxruntime-gpu instalado "
             "e ORT_DYLIB_PATH configurado antes de importar kreuzberg "
             "(https://docs.kreuzberg.dev/reference/environment-variables/#ort_dylib_path).",
-            "No Windows o wheel ort-dynamic ainda não está disponível — use EasyOCR GPU.",
+            "No Windows o wheel ort-dynamic ainda não está disponível — use RapidOCR GPU.",
         ]
         return "\n".join(lines)
 
@@ -1205,7 +1228,9 @@ class KreuzbergOCREngine:
 
     def _try_downgrade_ocr_backend(self, error_text: str, page: int) -> bool:
         err = (error_text or "").lower()
-        if self.mode == ProcessingMode.GPU and "easyocr" in err:
+        if self.mode == ProcessingMode.GPU and (
+            "rapidocr" in err or "onnxruntime" in err
+        ):
             logger.warning(
                 "GPU OCR failed on page %s (%s). Falling back to CPU.",
                 page,
@@ -1332,13 +1357,18 @@ class KreuzbergOCREngine:
         prefer_tables = any(
             (c.doc_kind in FORM_KINDS) or c.force_image_ocr for c in classifications
         )
-        extraction_config, easyocr_kwargs = self._build_extraction_config(
+        if self.mode_config.get("backend") == "rapidocr":
+            from core.rapid_ocr import ocr_png_batch as rapid_ocr_batch
+
+            return rapid_ocr_batch(
+                png_list,
+                rec_batch_num=self._adaptive_rec_batch_num(),
+            )
+        extraction_config, _extra_kwargs = self._build_extraction_config(
             force_ocr=True,
             prefer_tables=prefer_tables,
         )
         kwargs: dict[str, Any] = {"config": extraction_config}
-        if easyocr_kwargs is not None:
-            kwargs["easyocr_kwargs"] = easyocr_kwargs
         mime_types = ["image/png"] * len(png_list)
         try:
             results = kreuzberg.batch_extract_bytes_sync(
@@ -1366,12 +1396,14 @@ class KreuzbergOCREngine:
         return ""
 
     def _can_batch_ocr(self, classifications: Sequence) -> bool:
-        """True when Kreuzberg can OCR several rasters in one call."""
+        """True when several rasters can be OCR'd in one batch call."""
         if self._paddle_gpu is not None:
             return False
-        return len(classifications) >= 2 and hasattr(
-            kreuzberg, "batch_extract_bytes_sync"
-        )
+        if len(classifications) < 2:
+            return False
+        if self.mode_config.get("backend") == "rapidocr":
+            return True
+        return hasattr(kreuzberg, "batch_extract_bytes_sync")
 
     def _process_image_page_run(
         self,

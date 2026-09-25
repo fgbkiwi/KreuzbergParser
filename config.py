@@ -18,7 +18,7 @@ class ProcessingMode(str, Enum):
 
 
 def is_gpu_mode(mode) -> bool:
-    """True for EasyOCR GPU and PaddleOCR GPU."""
+    """True for RapidOCR GPU and PaddleOCR GPU."""
     value = mode.value if isinstance(mode, ProcessingMode) else str(mode or "")
     return value in (ProcessingMode.GPU.value, ProcessingMode.PADDLE_GPU.value)
 
@@ -53,7 +53,7 @@ def processing_mode_availability(
             return (
                 False,
                 "PaddleOCR GPU nativo indisponível no Windows "
-                "(wheel ort-dynamic só no Linux) — use EasyOCR GPU",
+                "(wheel ort-dynamic só no Linux) — use RapidOCR GPU",
             )
         if not gpu_suitable:
             return False, "GPU NVIDIA adequada não detectada"
@@ -125,12 +125,12 @@ class Config:
     MEDIUM_FIGURE_COVERAGE = 0.08
 
     # Backend-specific language code mapping
-    # Example: PaddleOCR and EasyOCR use "pt" instead of Tesseract's "por" for Portuguese.
+    # Example: PaddleOCR / RapidOCR use "pt" instead of Tesseract's "por" for Portuguese.
     BACKEND_LANGUAGE_MAP = {
         "paddleocr": {
             "por": "pt"
         },
-        "easyocr": {
+        "rapidocr": {
             "por": "pt"
         }
     }
@@ -147,7 +147,7 @@ class Config:
 
     MODE_CONFIGS = {
         ProcessingMode.GPU: {
-            "backend": "easyocr",  # GPU-accelerated first pass
+            "backend": "rapidocr",  # GPU via RapidOCR + onnxruntime-gpu
             "use_gpu": True,
             "batch_size": 8,
             "dpi": 300,
@@ -156,7 +156,8 @@ class Config:
             "detect_tables": True,
             "language": "por",
             "enable_trocr": True,  # Enable handwriting detection
-            "force_ocr": False
+            "force_ocr": False,
+            "rec_batch_num": 8,
         },
         ProcessingMode.CPU: {
             "backend": "tesseract",  # Fast CPU

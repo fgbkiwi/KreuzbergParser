@@ -8,7 +8,7 @@
 # O wheel do PyPI embute ONNX Runtime só-CPU e não executa PaddleOCR em CUDA.
 kreuzberg
 pytesseract
-easyocr
+rapidocr
 
 # Deep Learning for Handwriting
 # torch / torchvision come from the PyTorch CUDA index (default: cu130 / Blackwell)
@@ -26,5 +26,6 @@ python-dotenv
 
 # PaddleOCR GPU: exclusivamente Kreuzberg nativo (AccelerationConfig cuda) com
 # wheel local ort-dynamic + onnxruntime-gpu (ORT_DYLIB_PATH aponta para a lib
-# CUDA do pacote). Sem fallbacks: não instale paddleocr, paddlepaddle ou rapidocr.
+# CUDA do pacote). Sem fallbacks: não instale paddleocr ou paddlepaddle.
+# RapidOCR (+ onnxruntime-gpu) é o motor do modo GPU no Windows.
 onnxruntime-gpu>=1.27

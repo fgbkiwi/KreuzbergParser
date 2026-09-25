@@ -120,7 +120,7 @@ function Remove-ForbiddenPackages {
         "paddlex",
         "paddlepaddle",
         "paddlepaddle-gpu",
-        "rapidocr",
+        "easyocr",
         "nvidia-cufile",
         "nvidia-cufile-cu12",
         "nvidia-cufile-cu13"
@@ -177,7 +177,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Remove-ForbiddenPackages
 
-# OpenCV: keep only opencv-python-headless (EasyOCR); no contrib / GUI wheels.
+# OpenCV: keep only opencv-python-headless (RapidOCR); no contrib / GUI wheels.
 # Force reinstall — a partial uninstall can leave a broken namespace-style cv2/
 # folder (stubs + ffmpeg DLL only), which breaks both runtime and Pynsist.
 Write-Step "Normalizing OpenCV providers (keep opencv-python-headless)"

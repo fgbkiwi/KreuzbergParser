@@ -7,7 +7,7 @@ VENV="${ROOT}/.venv-nemotron"
 MODEL_ID="${NEMOTRON_MODEL_ID:-nvidia/NVIDIA-Nemotron-Parse-2.0}"
 PORT="${NEMOTRON_PORT:-8000}"
 # Default 0.70: RTX 16GB often has ~1 GiB already used (desktop). 0.92 is vLLM default
-# and fails when free VRAM < 92%. Leave headroom for KreuzbergParser EasyOCR.
+# and fails when free VRAM < 92%. Leave headroom for KreuzbergParser RapidOCR.
 GPU_MEM="${NEMOTRON_GPU_MEM:-0.70}"
 MAX_NUM_SEQS="${NEMOTRON_MAX_NUM_SEQS:-4}"
 

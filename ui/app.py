@@ -235,7 +235,7 @@ class OCRApp:
         self.setup_ui()
 
     def _default_processing_mode(self) -> ProcessingMode:
-        """Prefer EasyOCR GPU when suitable; never pick unavailable modes."""
+        """Prefer RapidOCR GPU when suitable; never pick unavailable modes."""
         if is_processing_mode_available(
             ProcessingMode.GPU, gpu_suitable=self._gpu_suitable_flag()
         ):
@@ -338,7 +338,7 @@ class OCRApp:
                             ),
                             _mode_radio(
                                 ProcessingMode.GPU,
-                                "🚀 GPU - EasyOCR CUDA",
+                                "🚀 GPU - RapidOCR CUDA",
                             ),
                         ],
                         spacing=4,

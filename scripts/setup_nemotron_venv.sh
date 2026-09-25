@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Create an isolated venv for NVIDIA Nemotron Parse 2.0 + vLLM.
-# Do NOT mix this with the main KreuzbergParser .venv (EasyOCR/PyTorch pins).
+# Do NOT mix this with the main KreuzbergParser .venv (RapidOCR/PyTorch pins).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

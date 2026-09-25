@@ -263,7 +263,7 @@ python-dotenv==1.0.0      # Configuração .env
 - **VLM**: opcional
 
 ### 🚀 GPU
-- **Backend**: EasyOCR CUDA
+- **Backend**: RapidOCR CUDA
 - **DPI**: 300 (formulários)
 - **Handwriting**: TrOCR opcional
 - **VLM**: Qwen (Ollama) ou Nemotron Parse (vLLM em `.venv-nemotron`)
