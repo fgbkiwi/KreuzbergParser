@@ -16,8 +16,9 @@ transformers
 pillow
 
 # Interface Gráfica
-flet
-flet-desktop
+# Flet 1.0 removeu ft.app (virou ft.run) e quebra a UI atual; manter 0.86.x.
+flet==0.86.5
+flet-desktop==0.86.5
 
 # Utilities
 tqdm

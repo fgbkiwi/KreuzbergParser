@@ -112,9 +112,11 @@ brew install tesseract tesseract-lang
 
 ### ❌ Interface não abre
 
+**Não atualize o Flet para 1.x** (`pip install --upgrade flet` / `uv pip install -U flet`). O projeto depende da API **0.86** (`ft.app`); na 1.0 isso vira `ft.run` e a app falha com `AttributeError: module 'flet' has no attribute 'app'`. Use só `flet==0.86.5` e `flet-desktop==0.86.5`.
+
 **Solução:**
 ```bash
-pip install --upgrade flet
+uv pip install "flet==0.86.5" "flet-desktop==0.86.5"
 python main.py
 ```
 

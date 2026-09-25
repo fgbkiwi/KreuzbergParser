@@ -626,10 +626,15 @@ pip install kreuzberg
 
 ### Problema: Flet não abre interface
 
+**Não atualize o Flet para 1.x.** Este projeto usa a API **0.86** (`ft.app`). Na 1.0, `ft.app` foi removido (virou `ft.run`) e a UI quebra com `AttributeError: module 'flet' has no attribute 'app'`. Mantenha `flet==0.86.5` / `flet-desktop==0.86.5` (já pinados em `requirements.txt` e `requirements.in`).
+
 **Solução:**
 
 1. Verificar Python 3.9+: `python --version`
-2. Reinstalar Flet: `pip install --upgrade flet`
+2. Reinstalar a versão pinada (não use `--upgrade`):
+   ```bash
+   uv pip install "flet==0.86.5" "flet-desktop==0.86.5"
+   ```
 3. Verificar logs em `logs/` (`{CNJ}_ocr_{modo}_{modelo}_AAAAMMDD_HHMMSS.log` após PROCESSAR PDF)
 
 
