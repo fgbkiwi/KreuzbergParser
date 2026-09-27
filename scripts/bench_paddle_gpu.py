@@ -29,15 +29,19 @@ def parse_spec(spec: str) -> Tuple[str, int]:
 
 
 def render_pages(pdf: Path, pages: Sequence[int], dpi: int) -> List[Any]:
-    import cv2
-    import kreuzberg
+    from io import BytesIO
+
     import numpy as np
+    from PIL import Image
+
+    import kreuzberg
 
     images = []
     for page in pages:
         png = kreuzberg.render_pdf_page(str(pdf), page - 1, dpi=dpi)
-        arr = np.frombuffer(png, dtype=np.uint8)
-        image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        # BGR for Paddle/OpenCV consumers (Pillow decode avoids cv2.imdecode).
+        rgb = np.asarray(Image.open(BytesIO(png)).convert("RGB"))
+        image = rgb[:, :, ::-1].copy()
         print(f"  page {page}: {image.shape[1]}x{image.shape[0]}")
         images.append(image)
     return images

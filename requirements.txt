@@ -86,8 +86,10 @@ oauthlib==3.3.1
     # via flet
 onnxruntime-gpu==1.29.0
     # via -r /tmp/update_deps.iynUFA/base.in
-opencv-python-headless==5.0.0.93
-    # via easyocr
+opencv-python-headless==4.14.0.94
+    # via
+    #   -r requirements.in
+    #   rapidocr (opencv_python; we keep the headless provider only)
 packaging==26.3
     # via
     #   huggingface-hub

@@ -20,13 +20,19 @@ _engine_rec_batch: Optional[int] = None
 
 
 def _png_to_rgb(png_bytes: bytes) -> np.ndarray:
-    import cv2
+    """Decode PNG bytes to RGB without ``cv2.imdecode``.
 
-    buf = np.frombuffer(png_bytes, dtype=np.uint8)
-    bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-    if bgr is None:
-        raise ValueError("Could not decode PNG bytes for RapidOCR")
-    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    OpenCV 5.x wheels have been observed to raise
+    ``AttributeError: module 'cv2' has no attribute 'imdecode'`` under the
+    GPU/RapidOCR path; Pillow is already a hard dependency and is reliable.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    with Image.open(BytesIO(png_bytes)) as img:
+        rgb = img.convert("RGB")
+        return np.asarray(rgb)
 
 
 def get_rapid_ocr_engine(*, rec_batch_num: int = 8):

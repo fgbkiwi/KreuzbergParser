@@ -9,6 +9,9 @@
 kreuzberg
 pytesseract
 rapidocr
+# OpenCV 5.x (ex. 5.0.0.93) quebrou cv2.imdecode neste stack; RapidOCR aceita 4.x.
+# Um único provedor cv2 — ver docs/DEPENDENCY_CONFLICTS.md.
+opencv-python-headless>=4.8,<5
 
 # Deep Learning for Handwriting
 # torch / torchvision come from the PyTorch CUDA index (default: cu130 / Blackwell)

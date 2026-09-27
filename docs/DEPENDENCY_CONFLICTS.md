@@ -10,7 +10,7 @@ Orientação atual de GPU: [`GPU_SETUP.md`](../GPU_SETUP.md).
 | Python | **3.12** (wheels CUDA; evitar ≥3.13 neste projeto) |
 | PyTorch | **2.13.0+cu130** |
 | GPU alvo | **NVIDIA GeForce RTX 5060 Ti 16 GB** (Blackwell `sm_120`) |
-| OpenCV | um único `cv2` (`opencv-python-headless`) |
+| OpenCV | um único `cv2` (`opencv-python-headless` **4.x**, `<5`) |
 | Kreuzberg | wheel local `ort-dynamic` em `vendor/wheels/` (`./scripts/build_kreuzberg_gpu.sh`) |
 
 ## Regras — não misturar
@@ -40,7 +40,8 @@ uv pip uninstall paddleocr paddlex paddlepaddle paddlepaddle-gpu easyocr
 
 Vários wheels (`opencv-python`, `opencv-python-headless`, `opencv-contrib-python`) fornecem o módulo `cv2`. Ter dois no mesmo venv causa imports imprevisíveis.
 
-- Manter apenas **`opencv-python-headless`** (dependência do RapidOCR)
+- Manter apenas **`opencv-python-headless>=4.8,<5`** (dependência do RapidOCR)
+- **Não** instalar OpenCV 5.x neste projeto (`cv2.imdecode` quebrou no caminho GPU/RapidOCR)
 - Evitar: `opencv-python` (GUI) e variantes `contrib` em paralelo
 
 ### 4. Toolkit CUDA do sistema: só se for compilar kernels (vLLM / FlashInfer)

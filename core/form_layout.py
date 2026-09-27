@@ -19,13 +19,16 @@ logger = logging.getLogger(__name__)
 
 try:
     import pytesseract
-    from PIL import Image
 
     _TESS_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional at import time
     pytesseract = None
-    Image = None  # type: ignore
     _TESS_AVAILABLE = False
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover
+    Image = None  # type: ignore
 
 try:
     import cv2
@@ -483,8 +486,13 @@ def detect_table_grid(
     if not _CV2_AVAILABLE or not png_bytes:
         return None
     try:
-        arr = np.frombuffer(png_bytes, dtype=np.uint8)
-        image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        # Prefer Pillow decode: avoids OpenCV 5.x ``imdecode`` AttributeError.
+        if Image is not None:
+            pil = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+            image = cv2.cvtColor(np.asarray(pil), cv2.COLOR_RGB2BGR)
+        else:
+            arr = np.frombuffer(png_bytes, dtype=np.uint8)
+            image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if image is None:
             return None
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)

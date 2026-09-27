@@ -368,6 +368,10 @@ if ($productNameHits -ne 1) {
     Write-Error "installer.nsi invalido apos pynsist (PRODUCT_NAME x$productNameHits). Apague build\nsis e rode de novo."
     exit 1
 }
+if ($nsi.Contains('pkgs\cv2\cv2')) {
+    Write-Error "installer.nsi aninha OpenCV em pkgs\cv2\cv2 (import cv2 vira namespace vazio). Use 'cv2 > `$INSTDIR\pkgs' no $CONFIG_FILE."
+    exit 1
+}
 if ($nsi.Contains("Get-CimInstance") -or $nsi.Contains("close_kiwi_down.ps1") -or $nsi.Contains("stamp_lnk_aumid.ps1")) {
     Write-Error "installer.nsi ja contem patch residual. Apague build\nsis\installer.nsi e rode de novo."
     exit 1
