@@ -1,6 +1,10 @@
 # Direct dependencies (loose).
 # Linux/macOS: ./scripts/update_deps.sh  (writes conflict-free pins to requirements.txt)
-# Windows:     .\scripts\update_deps.ps1 -Sync  (torch CUDA + requirements.in; no Linux lock sync)
+# Windows:     .\scripts\update_deps.ps1 -Sync  (installs requirements.in; no Linux lock sync)
+#
+# Sem PyTorch: o único código GPU é o ONNX Runtime (Kreuzberg/PaddleOCR e
+# RapidOCR). Não reintroduza torch/transformers — eles somavam ~3.5 GB e
+# estouravam o limite de 2 GiB por asset das Releases do GitHub.
 
 # Core OCR and Document Processing
 # kreuzberg: o pin resolve as dependências, mas a instalação real usa o wheel
@@ -13,9 +17,6 @@ rapidocr
 # Um único provedor cv2 — ver docs/DEPENDENCY_CONFLICTS.md.
 opencv-python-headless>=4.8,<5
 
-# Deep Learning for Handwriting
-# torch / torchvision come from the PyTorch CUDA index (default: cu132 / Blackwell)
-transformers
 pillow
 
 # Interface Gráfica
@@ -27,9 +28,13 @@ flet-desktop==0.86.5
 tqdm
 psutil
 python-dotenv
+# Detecção de GPU/VRAM via NVML do driver NVIDIA (sem torch)
+nvidia-ml-py
 
 # PaddleOCR GPU: exclusivamente Kreuzberg nativo (AccelerationConfig cuda) com
 # wheel local ort-dynamic + onnxruntime-gpu (ORT_DYLIB_PATH aponta para a lib
 # CUDA do pacote). Sem fallbacks: não instale paddleocr ou paddlepaddle.
 # RapidOCR (+ onnxruntime-gpu) é o motor do modo GPU no Windows.
-onnxruntime-gpu>=1.27
+# Extras [cuda,cudnn]: instalam as libs CUDA 13 / cuDNN 9 (nvidia-* wheels)
+# que o provider CUDA do ORT carrega — antes vinham como deps do torch.
+onnxruntime-gpu[cuda,cudnn]>=1.27

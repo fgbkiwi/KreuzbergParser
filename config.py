@@ -135,12 +135,6 @@ class Config:
         }
     }
     
-    # ===== HANDWRITING DETECTION =====
-    # Custom TrOCR for handwriting (only custom code needed)
-    HANDWRITING_CONFIDENCE_THRESHOLD = 0.30
-    TROCR_MODEL = 'microsoft/trocr-base-handwritten'
-    TROCR_MAX_LENGTH = 256
-    
     # ===== OCR MODE CONFIGURATIONS =====
     # Default DPI for identity / standardized labor forms (TRCT, CD/SD, etc.)
     DPI_FORM_DEFAULT = 300
@@ -155,7 +149,6 @@ class Config:
             "dpi_screenshot": 220,
             "detect_tables": True,
             "language": "por",
-            "enable_trocr": True,  # Enable handwriting detection
             "force_ocr": False,
             "rec_batch_num": 8,
         },
@@ -167,7 +160,6 @@ class Config:
             "dpi_screenshot": 220,
             "detect_tables": True,
             "language": "por",
-            "enable_trocr": False,  # Too slow on CPU
             "force_ocr": False
         },
         ProcessingMode.EXPRESS: {
@@ -178,7 +170,6 @@ class Config:
             "dpi_screenshot": 200,
             "detect_tables": True,
             "language": "por",
-            "enable_trocr": False,
             "skip_preprocessing": True,
             "force_ocr": False
         },
@@ -191,7 +182,6 @@ class Config:
             "dpi_screenshot": 220,
             "detect_tables": True,
             "language": "por",
-            "enable_trocr": True,
             "force_ocr": False,
             "model_tier": "server",
             "padding": 16,
@@ -212,7 +202,6 @@ class Config:
             "dpi_screenshot": 220,
             "detect_tables": True,
             "language": "por",
-            "enable_trocr": False,
             "force_ocr": False,
             "model_tier": "mobile",
             "padding": 10,

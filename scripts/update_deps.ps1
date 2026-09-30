@@ -1,7 +1,10 @@
 # ============================================================
 # Install / refresh KreuzbergParser dependencies on Windows
-# without mixing incompatible stacks (torch CPU, paddlepaddle,
+# without mixing incompatible stacks (paddlepaddle, leftover PyTorch,
 # multiple OpenCV providers, Linux-only nvidia-* wheels).
+#
+# No PyTorch: onnxruntime-gpu[cuda,cudnn] (requirements.in) pulls the
+# CUDA 13 / cuDNN 9 nvidia-* wheels that ONNX Runtime loads.
 #
 # Do NOT use `uv pip sync requirements.txt` on Windows — that lockfile
 # includes Linux-only NVIDIA packages (e.g. nvidia-cufile).
@@ -10,8 +13,6 @@
 #   .\scripts\update_deps.ps1                 # install/upgrade into .venv
 #   .\scripts\update_deps.ps1 -Sync           # same (alias for clarity)
 #   .\scripts\update_deps.ps1 -Check          # conflict check only
-#   .\scripts\update_deps.ps1 -Cuda cu132     # PyTorch CUDA/CPU index
-#   .\scripts\update_deps.ps1 -Cuda cpu
 #   .\scripts\update_deps.ps1 -NoUpgrade      # install without --upgrade
 #   .\scripts\update_deps.ps1 -Python 3.12
 #
@@ -19,9 +20,6 @@
 # ============================================================
 
 param(
-    [ValidateSet("cu118", "cu121", "cu124", "cu126", "cu128", "cu130", "cu132", "cpu")]
-    [string]$Cuda = "cu132",
-
     [string]$Python = "3.12",
 
     [switch]$Sync,
@@ -51,13 +49,6 @@ function Write-Step([string]$Message) {
 function Die([string]$Message) {
     Write-Host "error: $Message" -ForegroundColor Red
     exit 1
-}
-
-function Get-PytorchIndexUrl([string]$Tag) {
-    if ($Tag -eq "cpu") {
-        return "https://download.pytorch.org/whl/cpu"
-    }
-    return "https://download.pytorch.org/whl/$Tag"
 }
 
 function Require-Uv {
@@ -104,7 +95,7 @@ function Invoke-ConflictCheck {
     try {
         # Start-Process evita misturar stdout nativo com o output stream do PowerShell.
         $p = Start-Process -FilePath $PythonExe `
-            -ArgumentList @($checker, $Cuda, $PythonExe) `
+            -ArgumentList @($checker, $PythonExe) `
             -WorkingDirectory $Root `
             -Wait -PassThru -NoNewWindow
         return ,[int]$p.ExitCode
@@ -121,6 +112,14 @@ function Remove-ForbiddenPackages {
         "paddlepaddle",
         "paddlepaddle-gpu",
         "easyocr",
+        # TrOCR foi removido: o stack PyTorch so inflaria o instalador.
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "transformers",
+        "tokenizers",
+        "safetensors",
+        "huggingface-hub",
         "nvidia-cufile",
         "nvidia-cufile-cu12",
         "nvidia-cufile-cu13"
@@ -152,21 +151,9 @@ if ($Check) {
     exit 0
 }
 
-$IndexUrl = Get-PytorchIndexUrl $Cuda
 $UpgradeArgs = @()
 if (-not $NoUpgrade) {
     $UpgradeArgs += "--upgrade"
-}
-
-Write-Step "Installing PyTorch ($Cuda) from $IndexUrl"
-# Floor on torchvision: the PyTorch index mirrors ancient unpinned wheels
-# (0.1.x) that the resolver picks when a torch patch ships ahead of it.
-uv pip install torch "torchvision>=0.26" `
-    --python $PythonExe `
-    --index-url $IndexUrl `
-    @UpgradeArgs
-if ($LASTEXITCODE -ne 0) {
-    Die "failed to install torch/torchvision from $IndexUrl"
 }
 
 Write-Step "Installing project dependencies from requirements.in"
@@ -216,7 +203,6 @@ if ($rc -ne 0) {
 Write-Step "Done"
 Write-Host "    Source: $InFile"
 Write-Host "    Python: $PythonExe"
-Write-Host "    CUDA:   $Cuda ($IndexUrl)"
 Write-Host "    Run:    .\.venv\Scripts\python.exe main.py"
 if ($Sync) {
     Write-Host "    (-Sync acknowledged; Windows uses install, not requirements.txt sync)" -ForegroundColor Gray

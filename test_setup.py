@@ -38,21 +38,24 @@ except ImportError:
     print("     Instalar com: pip install flet")
     sys.exit(1)
 
-# Test 4: PyTorch (optional)
-print("\n✓ Verificando PyTorch (GPU mode)...")
+# Test 4: GPU NVIDIA (NVML) + ONNX Runtime CUDA (GPU modes)
+print("\n✓ Verificando GPU (modos GPU)...")
 try:
-    import torch
-    cuda_available = torch.cuda.is_available()
-    if cuda_available:
-        print(f"  ✅ PyTorch com CUDA detectado")
-        print(f"     GPU: {torch.cuda.get_device_name(0)}")
-        vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        print(f"     VRAM: {vram:.1f}GB")
+    from utils.gpu_detector import gpu_detector
+    from utils.ort_runtime import prepare_paddle_gpu_runtime
+
+    gpu_info = gpu_detector.get_gpu_info()
+    if gpu_info["available"]:
+        print(f"  ✅ GPU: {gpu_info['name']}")
+        print(f"     VRAM: {gpu_info['vram_gb']:.1f}GB")
+        if prepare_paddle_gpu_runtime():
+            print("  ✅ onnxruntime-gpu com CUDAExecutionProvider")
+        else:
+            print("  ⚠️  onnxruntime-gpu sem CUDA — modos GPU não funcionarão")
     else:
-        print(f"  ⚠️  PyTorch instalado, mas CUDA não disponível")
-        print("     Modo GPU não funcionará")
-except ImportError:
-    print("  ℹ️  PyTorch não instalado (opcional para GPU mode)")
+        print("  ℹ️  GPU NVIDIA não detectada (modos GPU indisponíveis)")
+except ImportError as exc:
+    print(f"  ⚠️  Verificação de GPU indisponível: {exc}")
 
 # Test 5: Tesseract
 print("\n✓ Verificando Tesseract OCR...")

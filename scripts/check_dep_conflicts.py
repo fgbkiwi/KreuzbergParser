@@ -1,7 +1,7 @@
 """Check KreuzbergParser dependency conflicts in the active environment.
 
 Usage:
-    python scripts/check_dep_conflicts.py [cuda_tag] [venv_python]
+    python scripts/check_dep_conflicts.py [venv_python]
 
 Exit codes:
     0 — OK (warnings allowed)
@@ -25,7 +25,8 @@ paddle_forbidden = {
 legacy_ocr_forbidden = {
     "easyocr",
 }
-torch_names = {"torch", "torchvision", "torchaudio"}
+# TrOCR was removed; the PyTorch stack (~3.5 GB) would only bloat the installers.
+torch_stack = {"torch", "torchvision", "torchaudio", "triton", "transformers"}
 linux_only_hints = {
     "nvidia-cufile",
     "nvidia-cufile-cu12",
@@ -100,9 +101,8 @@ def check_python_version(python: Path) -> None:
 
 
 def main() -> int:
-    cuda_tag = sys.argv[1] if len(sys.argv) > 1 else "cu132"
-    if len(sys.argv) > 2:
-        venv_python = Path(sys.argv[2])
+    if len(sys.argv) > 1:
+        venv_python = Path(sys.argv[1])
     else:
         root = Path(__file__).resolve().parent.parent
         candidates = [
@@ -113,25 +113,13 @@ def main() -> int:
 
     installed = installed_versions(venv_python)
 
-    if cuda_tag != "cpu":
-        for name in torch_names:
-            ver = installed.get(name)
-            if not ver:
-                continue
-            lower = ver.lower()
-            if "+cpu" in lower or (
-                name == "torch" and "+cu" not in lower and "cu" not in lower
-            ):
-                emit(
-                    "FAIL",
-                    f"installed {name}={ver} looks like PyPI/CPU — expected CUDA build "
-                    f"(+{cuda_tag}) from the PyTorch index",
-                )
-            elif name == "torch" and f"+{cuda_tag}" not in lower and "+cu" in lower:
-                emit(
-                    "WARN",
-                    f"installed {name}={ver} CUDA tag differs from expected +{cuda_tag}",
-                )
+    for name in sorted(torch_stack):
+        if name in installed:
+            emit(
+                "FAIL",
+                f"installed package {name} — the app no longer uses PyTorch; "
+                "uninstall it (it would be bundled into the installer)",
+            )
 
     for name in sorted(paddle_forbidden):
         if name in installed:

@@ -7,7 +7,7 @@
 #
 # Pré-requisitos (build no Linux):
 #   uv, dpkg-deb, Python 3.12 (via uv python)
-#   ./scripts/update_deps.sh --sync --cuda cu132
+#   ./scripts/update_deps.sh --sync
 #   ./scripts/build_kreuzberg_gpu.sh   # gera vendor/wheels/kreuzberg-*.whl
 #   gh autenticado — só se for publicar
 #
@@ -16,7 +16,6 @@
 #   ./build_kreuzberg_parser_deb.sh --bump patch          # bump + .deb + commit/tag/push + Release
 #   ./build_kreuzberg_parser_deb.sh                       # versão atual + tag (se faltar) + Release
 #   ./build_kreuzberg_parser_deb.sh --bump minor --no-publish
-#   ./build_kreuzberg_parser_deb.sh --cuda cu132 --no-publish
 #   ./build_kreuzberg_parser_deb.sh --allow-dirty ...     # permite working tree sujo
 #
 # Ao publicar, o script exige working tree limpo e em dia com o remoto,
@@ -39,13 +38,12 @@ REQ_FILE="requirements.txt"
 BUMP_SCRIPT="bump_version.py"
 VERSION_FILES=(main.py pyproject.toml kreuzberg_parser_pynsist.cfg)
 
-CUDA_TAG="cu132"
 DO_PUBLISH=1
 BUMP_PART=""  # empty = no bump (default: attach to same tag as Windows)
 ALLOW_DIRTY=0
 
 usage() {
-  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -67,11 +65,6 @@ while [[ $# -gt 0 ]]; do
     --bump)
       [[ $# -ge 2 ]] || die "--bump requires patch|minor|major"
       BUMP_PART="$2"
-      shift 2
-      ;;
-    --cuda)
-      [[ $# -ge 2 ]] || die "--cuda requires a tag (e.g. cu132)"
-      CUDA_TAG="$2"
       shift 2
       ;;
     *)
@@ -100,14 +93,6 @@ command -v dpkg-deb >/dev/null 2>&1 || die "dpkg-deb not found. Install: sudo ap
 GPU_WHEEL="$(ls -1 "${ROOT}"/vendor/wheels/kreuzberg-*.whl 2>/dev/null | sort | tail -n 1 || true)"
 [[ -n "$GPU_WHEEL" ]] || die "vendor/wheels/kreuzberg-*.whl not found. Run: ./scripts/build_kreuzberg_gpu.sh"
 
-pytorch_index_url() {
-  case "$1" in
-    cpu) echo "https://download.pytorch.org/whl/cpu" ;;
-    cu118|cu121|cu124|cu126|cu128|cu130|cu132) echo "https://download.pytorch.org/whl/$1" ;;
-    *) die "unsupported CUDA tag '$1'" ;;
-  esac
-}
-INDEX_URL="$(pytorch_index_url "$CUDA_TAG")"
 
 if [[ "$DO_PUBLISH" -eq 1 ]]; then
   command -v gh >/dev/null 2>&1 || die "GitHub CLI (gh) not found. Install it or use --no-publish."
@@ -195,30 +180,72 @@ mkdir -p \
   "${STAGING}/DEBIAN"
 
 # --- Create venv + install deps ------------------------------------------
-log "[2/5] Criando venv CPython 3.12 e instalando dependências (CUDA ${CUDA_TAG})..."
-log "  (o stack CUDA torna este passo lento e o .deb grande)"
+log "[2/5] Criando venv CPython 3.12 e instalando dependências..."
+log "  (as libs CUDA/cuDNN do onnxruntime-gpu tornam este passo lento)"
 uv python install 3.12 >/dev/null
 uv venv "$VENV_STAGING" --python 3.12 --clear
 VENV_PY="${VENV_STAGING}/bin/python"
 
-uv pip sync "$REQ_FILE" \
-  --python "$VENV_PY" \
-  --extra-index-url "$INDEX_URL" \
-  --index-strategy unsafe-best-match
+uv pip sync "$REQ_FILE" --python "$VENV_PY"
 
 log "  Reinstalando wheel GPU Kreuzberg: ${GPU_WHEEL##*/}"
 uv pip install --python "$VENV_PY" --force-reinstall --no-deps "$GPU_WHEEL"
 
 log "  Verificando conflitos de dependências..."
-"$VENV_PY" "${ROOT}/scripts/check_dep_conflicts.py" "$CUDA_TAG" "$VENV_PY" \
+"$VENV_PY" "${ROOT}/scripts/check_dep_conflicts.py" "$VENV_PY" \
   || die "check_dep_conflicts.py failed — fix the staging venv before packaging"
 
-log "  Smoke test (cv2 / torch / kreuzberg)..."
-"$VENV_PY" - <<'PY' || die "smoke import failed in staging venv"
-import cv2  # noqa: F401
-import torch  # noqa: F401
-import kreuzberg  # noqa: F401
-print("smoke ok: cv2", cv2.__version__, "torch", torch.__version__, "kreuzberg", getattr(kreuzberg, "__version__", "?"))
+log "  Smoke test (cv2 / kreuzberg / NVML / sessão CUDA do ONNX Runtime)..."
+PYTHONPATH="$ROOT" "$VENV_PY" - <<'PY' || die "smoke test failed in staging venv"
+from pathlib import Path
+
+from utils.ort_runtime import preload_cuda_runtime
+
+preload_cuda_runtime()  # mesmo bootstrap do app: libs nvidia-* antes do ORT
+import cv2
+import kreuzberg
+import onnxruntime as ort
+import rapidocr
+from utils.gpu_detector import gpu_detector
+
+print("smoke: cv2", cv2.__version__, "kreuzberg", getattr(kreuzberg, "__version__", "?"),
+      "onnxruntime", ort.__version__)
+if not gpu_detector.cuda_available:
+    print("smoke: sem GPU NVIDIA neste host — sessão CUDA não testada")
+else:
+    # O ORT cai para CPU em silêncio se faltar uma lib CUDA, e só carrega o
+    # cuDNN quando uma convolução roda: executar um modelo do RapidOCR de fato.
+    import re
+    import sys
+
+    import numpy as np
+
+    model = min(Path(rapidocr.__file__).parent.rglob("*.onnx"), key=lambda p: p.stat().st_size)
+    session = ort.InferenceSession(str(model), providers=["CUDAExecutionProvider"])
+    if "CUDAExecutionProvider" not in session.get_providers():
+        raise SystemExit(f"CUDAExecutionProvider não carregou ({model.name}): {session.get_providers()}")
+    inp = session.get_inputs()[0]
+    shape = [d if isinstance(d, int) else 1 for d in inp.shape]
+    if len(shape) == 4:  # NCHW: dims dinâmicas de imagem precisam ser > 1
+        shape[2] = shape[2] if isinstance(inp.shape[2], int) else 48
+        shape[3] = shape[3] if isinstance(inp.shape[3], int) else 192
+    session.run(None, {inp.name: np.zeros(shape, dtype=np.float32)})
+
+    # Um CUDA toolkit do sistema (LD_LIBRARY_PATH) mascararia uma lib ausente
+    # no .deb: exija que as libs carregadas venham do venv empacotado.
+    loaded = {
+        line.split()[-1]
+        for line in open("/proc/self/maps")
+        if re.search(r"/lib(cudnn|cublas|cudart)\.so", line)
+    }
+    for lib in ("libcudnn.so", "libcublas.so", "libcudart.so"):
+        paths = [p for p in loaded if f"/{lib}" in p]
+        if not paths:
+            raise SystemExit(f"{lib} não foi carregado pela inferência CUDA")
+        outside = [p for p in paths if not p.startswith(sys.prefix)]
+        if outside:
+            raise SystemExit(f"{lib} carregado de fora do venv (lib ausente no pacote?): {outside}")
+    print("smoke: inferência CUDA ok em", gpu_detector.get_gpu_info()["name"], f"({model.name})")
 PY
 
 # Rewrite absolute staging paths → final /opt paths (relocatable install).
@@ -304,14 +331,14 @@ Architecture: amd64
 Installed-Size: ${INSTALLED_SIZE_KB}
 Maintainer: KreuzbergParser Maintainers <noreply@github.com>
 Depends: tesseract-ocr, tesseract-ocr-por, poppler-utils, libgtk-3-0, libgstreamer1.0-0, libmpv1 | libmpv2, python3-gi, gir1.2-gtk-3.0
-Suggests: nvidia-driver-580 | nvidia-driver-550 | nvidia-driver-535
+Suggests: nvidia-driver-580
 Homepage: https://github.com/${GITHUB_REPO}
 Description: OCR inteligente para PDFs judiciais (PJe)
- KreuzbergParser empacota Python 3.12 + stack CUDA (PyTorch cu${CUDA_TAG#cu})
+ KreuzbergParser empacota Python 3.12 + ONNX Runtime GPU (CUDA 13 / cuDNN 9)
  e a UI Flet. Instala em ${OPT_PREFIX}.
  .
- Express/CPU funcionam sem GPU. Modos GPU exigem driver NVIDIA atualizado
- (o wheel do PyTorch traz o runtime CUDA; toolkit não é necessário).
+ Express/CPU funcionam sem GPU. Modos GPU exigem driver NVIDIA 580+
+ (as wheels nvidia-* trazem o runtime CUDA; toolkit não é necessário).
  .
  Dados graváveis: ~/.local/share/KreuzbergParser
 EOF
@@ -370,7 +397,7 @@ sudo apt install ./${APP_NAME}_${VERSION}_amd64.deb
 
 Dependências apt (resolvidas pelo apt): tesseract-ocr, tesseract-ocr-por, poppler-utils, libgtk-3-0, gstreamer, libmpv, python3-gi.
 
-GPU: driver NVIDIA atualizado (\`nvidia-smi\`). Express/CPU funcionam sem GPU.
+GPU: driver NVIDIA 580+ (\`nvidia-smi\`). Express/CPU funcionam sem GPU.
 Dados: \`~/.local/share/KreuzbergParser\`
 EOF
 )"

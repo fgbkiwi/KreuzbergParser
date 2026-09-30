@@ -308,8 +308,6 @@ class OCRApp:
             hint_text="Clique no botão para selecionar...",
         )
 
-        handwriting_disabled = not is_gpu_mode(self.selected_mode)
-
         def _mode_radio(value: ProcessingMode, label: str) -> ft.Container:
             available = self._mode_is_available(value)
             reason = self._mode_unavailable_reason(value)
@@ -367,12 +365,6 @@ class OCRApp:
             ),
             value=self.selected_mode.value,
             on_change=self.on_mode_changed,
-        )
-
-        self.enable_handwriting_check = ft.Checkbox(
-            label="Detectar texto manuscrito (TrOCR - só modo GPU)",
-            value=False,
-            disabled=handwriting_disabled,
         )
 
         vlm_default = self.config.resolve_vlm_backend()
@@ -570,11 +562,6 @@ class OCRApp:
                                                 ],
                                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                                 spacing=6,
-                                            ),
-                                            ft.Container(
-                                                height=32,
-                                                alignment=ft.Alignment.CENTER_LEFT,
-                                                content=self.enable_handwriting_check,
                                             ),
                                             ft.Container(
                                                 height=56,
@@ -832,12 +819,6 @@ class OCRApp:
             self.selected_mode = fallback
             self.mode_radio.value = fallback.value
 
-        if not is_gpu_mode(self.selected_mode):
-            self.enable_handwriting_check.value = False
-            self.enable_handwriting_check.disabled = True
-        else:
-            self.enable_handwriting_check.disabled = False
-
         self._patch_page()
 
     def _update_process_button(self):
@@ -955,7 +936,6 @@ class OCRApp:
         fail_count = 0
         batch_start = time.time()
 
-        enable_hw = bool(self.enable_handwriting_check.value)
         vlm_backend = self.config.resolve_vlm_backend(self.vlm_dropdown.value)
         vlm_preset = self.config.vlm_preset(vlm_backend)
         enable_vlm = bool(vlm_preset.get("enabled"))
@@ -965,9 +945,6 @@ class OCRApp:
             ft.Colors.BLUE_700,
         )
         self.log_message(f"   Modo: {self.selected_mode}")
-        self.log_message(
-            f"   TrOCR manuscrito: {'sim' if enable_hw else 'não'}"
-        )
         self.log_message(
             f"   VLM fallback: {vlm_preset['label']}"
             + (
@@ -1011,7 +988,6 @@ class OCRApp:
                         engine=engine,
                         pdf_path=pdf_path,
                         output_folder=output_folder,
-                        enable_hw=enable_hw,
                         enable_vlm=enable_vlm,
                         vlm_backend=vlm_backend,
                         retarget_session=retarget,
@@ -1064,7 +1040,6 @@ class OCRApp:
         engine: KreuzbergOCREngine,
         pdf_path: str,
         output_folder: str,
-        enable_hw: bool,
         enable_vlm: bool,
         vlm_backend: str,
         retarget_session: bool,
@@ -1129,7 +1104,6 @@ class OCRApp:
         result = engine.process_pdf(
             pdf_path,
             progress_callback=on_page_progress,
-            enable_handwriting=enable_hw,
             images_output_dir=images_dir,
             enable_vlm=enable_vlm,
             vlm_backend=vlm_backend,

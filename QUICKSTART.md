@@ -17,7 +17,7 @@ Na raiz do **KreuzbergParser** (Python 3.12):
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-./scripts/update_deps.sh --sync --cuda cu132
+./scripts/update_deps.sh --sync
 .venv/bin/python main.py
 ```
 
@@ -96,13 +96,14 @@ brew install tesseract tesseract-lang
    nvidia-smi
    ```
 
-2. PyTorch com CUDA no `.venv`?
+2. GPU e ONNX Runtime CUDA no `.venv`?
    ```bash
-   .venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-   ./scripts/update_deps.sh --sync --cuda cu132
+   .venv/bin/python test_setup.py
+   ./scripts/update_deps.sh --sync    # reinstala onnxruntime-gpu[cuda,cudnn]
    ```
 
-> O modo GPU usa RapidOCR (onnxruntime-gpu) + TrOCR via PyTorch. O CUDA Toolkit (`nvcc`) **não** é necessário
+> O modo GPU usa RapidOCR (onnxruntime-gpu); o PaddleOCR GPU usa o Kreuzberg nativo. Não há PyTorch.
+> Requer driver NVIDIA 580+ (CUDA 13). O CUDA Toolkit (`nvcc`) **não** é necessário
 > para o KreuzbergParser. Só o servidor Nemotron Parse (vLLM/FlashInfer) precisa de
 > `./scripts/install_cuda_toolkit.sh`. Ver [`GPU_SETUP.md`](GPU_SETUP.md).
 
@@ -170,7 +171,7 @@ Agora que o sistema está funcionando:
 ## 📚 Documentação Completa
 
 - **README.md** - Documentação completa do sistema
-- **GPU_SETUP.md** - GPU cu132, Ollama, Nemotron
+- **GPU_SETUP.md** - GPU CUDA 13, Ollama, Nemotron
 - **docs/DEPENDENCY_CONFLICTS.md** - o que não misturar
 - **config.py** - Modos, VLM, templates
 

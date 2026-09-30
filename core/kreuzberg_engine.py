@@ -87,7 +87,6 @@ class KreuzbergOCREngine:
         self.mode = mode
         self.config = config or Config()
         self.mode_config = self.config.get_mode_config(mode)
-        self._handwriting_detector = None
         self._paddle_gpu = None
         self._paddle_native_cuda_error: Optional[BaseException] = None
         self._paddle_gpu_fallback_lines: List[str] = []
@@ -144,7 +143,6 @@ class KreuzbergOCREngine:
         pdf_path: str | Path,
         *,
         progress_callback: Optional[ProgressCallback] = None,
-        enable_handwriting: bool = False,
         images_output_dir: Optional[str | Path] = None,
         enable_vlm: Optional[bool] = None,
         enable_templates: Optional[bool] = None,
@@ -201,14 +199,6 @@ class KreuzbergOCREngine:
         else:
             images_dir = Path(images_output_dir)
         images_dir.mkdir(parents=True, exist_ok=True)
-
-        use_handwriting = bool(
-            enable_handwriting
-            and is_gpu_mode(self.mode)
-            and self.mode_config.get("enable_trocr", False)
-        )
-        if use_handwriting:
-            self._ensure_handwriting_detector()
 
         logger.info(
             "Form templates=%s VLM fallback=%s model=%s url=%s suffix=%s",
@@ -315,7 +305,6 @@ class KreuzbergOCREngine:
                             classifications=run,
                             page_texts=page_texts,
                             images_dir=images_dir,
-                            enable_handwriting=use_handwriting,
                             prefetch=prefetch,
                         )
                         for offset, page_data in enumerate(batch_pages):
@@ -340,7 +329,6 @@ class KreuzbergOCREngine:
                         if classification.page - 1 < len(page_texts)
                         else "",
                         images_dir=images_dir,
-                        enable_handwriting=use_handwriting,
                     )
                     pages_data.append(page_data)
                     if progress_callback:
@@ -370,7 +358,6 @@ class KreuzbergOCREngine:
                     "images_dir": str(images_dir),
                     "log_path": str(log_path),
                     "run_suffix": run_suffix,
-                    "handwriting_enabled": use_handwriting,
                     "sumario_docs": len(self._sumario),
                     "template_extraction": self.enable_template_extraction,
                     "vlm_fallback": self.enable_vlm_fallback,
@@ -408,7 +395,6 @@ class KreuzbergOCREngine:
         classification,
         raw_text: str,
         images_dir: Path,
-        enable_handwriting: bool,
         png_bytes: Optional[bytes] = None,
         raster_path: Optional[Path] = None,
         ocr_tuple=None,
@@ -460,7 +446,6 @@ class KreuzbergOCREngine:
             "raster_path": None,
             "ocr_failed": False,
             "ocr_failure_reason": None,
-            "handwriting_detected": False,
         }
 
         try:
@@ -478,7 +463,6 @@ class KreuzbergOCREngine:
                         pdf_path,
                         classification,
                         images_dir,
-                        enable_handwriting=enable_handwriting,
                         raw_text=raw_text,
                         png_bytes=png_bytes,
                         raster_path=raster_path,
@@ -636,7 +620,6 @@ class KreuzbergOCREngine:
         classification,
         images_dir: Path,
         *,
-        enable_handwriting: bool,
         raw_text: str,
         png_bytes: Optional[bytes] = None,
         raster_path: Optional[Path] = None,
@@ -806,18 +789,6 @@ class KreuzbergOCREngine:
             "extraction_source": extraction_source,
             "signature_lines": self._signature_lines_from_raw(raw_text),
         }
-
-        if enable_handwriting and self._handwriting_detector and not ocr_failed:
-            try:
-                result = self._handwriting_detector.enhance_page_with_handwriting_detection(
-                    result, str(raster_path)
-                )
-                # Strip stamp-like additions if any
-                result["text"] = (result.get("text") or "").strip()
-            except Exception as hw_exc:
-                logger.warning(
-                    "TrOCR failed on page %s: %s", classification.page, hw_exc
-                )
 
         return result
 
@@ -1413,7 +1384,6 @@ class KreuzbergOCREngine:
         classifications: Sequence,
         page_texts: Sequence[str],
         images_dir: Path,
-        enable_handwriting: bool,
         prefetch: ThreadPoolExecutor,
     ) -> List[Dict]:
         if self._can_batch_ocr(classifications):
@@ -1423,7 +1393,6 @@ class KreuzbergOCREngine:
                 classifications=classifications,
                 page_texts=page_texts,
                 images_dir=images_dir,
-                enable_handwriting=enable_handwriting,
                 prefetch=prefetch,
             )
         return self._process_image_page_run_pipelined(
@@ -1432,7 +1401,6 @@ class KreuzbergOCREngine:
             classifications=classifications,
             page_texts=page_texts,
             images_dir=images_dir,
-            enable_handwriting=enable_handwriting,
             prefetch=prefetch,
         )
 
@@ -1444,7 +1412,6 @@ class KreuzbergOCREngine:
         classifications: Sequence,
         page_texts: Sequence[str],
         images_dir: Path,
-        enable_handwriting: bool,
         prefetch: ThreadPoolExecutor,
     ) -> List[Dict]:
         rendered: List[Tuple[bytes, Path]] = []
@@ -1491,7 +1458,6 @@ class KreuzbergOCREngine:
                     classification=classification,
                     raw_text=self._page_raw_text(page_texts, classification.page),
                     images_dir=images_dir,
-                    enable_handwriting=enable_handwriting,
                     png_bytes=png_bytes,
                     raster_path=raster_path,
                     ocr_tuple=ocr_tuple,
@@ -1508,7 +1474,6 @@ class KreuzbergOCREngine:
         classifications: Sequence,
         page_texts: Sequence[str],
         images_dir: Path,
-        enable_handwriting: bool,
         prefetch: ThreadPoolExecutor,
     ) -> List[Dict]:
         """Rasterize the next page while OCR runs on the current one."""
@@ -1539,7 +1504,6 @@ class KreuzbergOCREngine:
                     classification=classification,
                     raw_text=self._page_raw_text(page_texts, classification.page),
                     images_dir=images_dir,
-                    enable_handwriting=enable_handwriting,
                     png_bytes=png_bytes,
                     raster_path=raster_path,
                     ocr_tuple=None,
@@ -1558,17 +1522,6 @@ class KreuzbergOCREngine:
         ):
             lines.append(match.group(0).strip())
         return lines
-
-    def _ensure_handwriting_detector(self) -> None:
-        if self._handwriting_detector is not None:
-            return
-        try:
-            from core.handwriting_detector import HandwritingDetector
-
-            self._handwriting_detector = HandwritingDetector(self.config)
-        except Exception as exc:
-            logger.warning("Handwriting detector unavailable: %s", exc)
-            self._handwriting_detector = None
 
     def _calculate_statistics(self, pages: List[Dict], total_time: float) -> Dict:
         total_pages = len(pages)

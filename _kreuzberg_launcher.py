@@ -15,7 +15,7 @@ APP_NAME = "Kiwi Down"
 
 
 def _isolate_from_user_site() -> None:
-    """Ignore %APPDATA%\\Python site-packages (breaks bundled transformers/hub)."""
+    """Ignore %APPDATA%\\Python site-packages (can shadow bundled packages)."""
     os.environ["PYTHONNOUSERSITE"] = "1"
     try:
         import site
@@ -58,7 +58,6 @@ def _add_dll_directories(base_dir: Path) -> None:
         base_dir / "pandas.libs",
         base_dir / "shapely.libs",
         base_dir / "cv2",
-        base_dir / "torch" / "lib",
         base_dir / "onnxruntime" / "capi",
         base_dir / "flet" / "bin",
     ]
@@ -277,7 +276,7 @@ def main() -> None:
             ensure_windows_taskbar_identity()
         except Exception:
             os.environ.setdefault("FLET_APP_USER_MODEL_ID", "KiwiDown.App")
-    # Show branding immediately — before Torch/Kreuzberg/Flet imports.
+    # Show branding immediately — before Kreuzberg/ONNX Runtime/Flet imports.
     close_early_splash = lambda: None  # noqa: E731 — replaced on success
     try:
         from utils.early_splash import close_early_splash, splash_debug, start_early_splash

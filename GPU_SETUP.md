@@ -1,6 +1,7 @@
-# GPU Setup (RapidOCR / TrOCR / PaddleOCR GPU)
+# GPU Setup (RapidOCR / PaddleOCR GPU)
 
-TrOCR usa o **wheel CUDA do PyTorch**. RapidOCR (modo GPU) usa **onnxruntime-gpu**.  
+RapidOCR (modo GPU) usa **onnxruntime-gpu**. Não há PyTorch no app: o antigo detector de manuscrito
+(TrOCR) foi removido e a detecção de GPU usa NVML (`nvidia-ml-py`).  
 PaddleOCR **CPU** usa o backend nativo do Kreuzberg (`AccelerationConfig(provider="cpu")`).  
 PaddleOCR **GPU** segue a documentação do Kreuzberg: `AccelerationConfig(provider="cuda")` + `onnxruntime-gpu` + `ORT_DYLIB_PATH`, usando o wheel local compilado com `ort-dynamic` (`./scripts/build_kreuzberg_gpu.sh`). Sem fallbacks: se o CUDA nativo não inicializar, o modo falha com diagnóstico.  
 Conflitos: [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md).
@@ -12,27 +13,22 @@ Conflitos: [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md).
 | GPU | NVIDIA GeForce RTX 5060 Ti (16 GB), Blackwell `sm_120` |
 | Driver | 580+ (`nvidia-smi` reports CUDA 13.0 capability) |
 | Python | **3.12** |
-| PyTorch | **2.14.0+cu132** (or newer `+cu132`) |
-| Index | `https://download.pytorch.org/whl/cu132` |
+| ONNX Runtime | `onnxruntime-gpu[cuda,cudnn]` 1.30 (built for CUDA 13) |
+| CUDA libs | `nvidia-*` wheels pulled by those extras: CUDA 13.x runtime/cuBLAS/cuFFT/cuRAND/nvrtc + cuDNN 9 |
 
-Older tags (`cu124`, `cu126`, …) **do not** include `sm_120`. Use **cu132** (or newer Blackwell-capable builds) on this hardware.
+You do **not** need a system CUDA development toolkit for this app — the `nvidia-*` wheels ship the
+runtime libraries. Only the NVIDIA driver is required. The CUDA 13.4 runtime wheels run on driver 580
+(CUDA minor-version compatibility; verified on 580.173 with both GPU modes).
 
-You do **not** need a system CUDA development toolkit for this app — the PyTorch wheel ships the runtime. Only the NVIDIA driver is required.
-
-`cu132` replaced `cu130` as the default: PyTorch ships `cu130` wheels only up to 2.14,
-and CUDA 13.2.2 fixes a compiler bug that could produce silently wrong results. The
-`cu132` wheels run on driver 580 (CUDA minor-version compatibility).
-
-**CUDA Toolkit 13.4** (September 2026) is **not needed**. Its additions (Windows on Arm,
-Rubin preview, MPS V3) do not apply to this app, its new features require driver branch
-R615, and PyTorch has no stable `cu134` wheels yet. The Nemotron venv keeps torch
-`+cu130` with `nvcc` 13.0 (`scripts/install_cuda_toolkit.sh`), which must stay matched.
+The Nemotron venv is separate: it keeps its own torch `+cu130` with `nvcc` 13.0
+(`scripts/install_cuda_toolkit.sh`), which must stay matched. Never install torch into the app `.venv`
+— it would be bundled into the installers (~3.5 GB, over GitHub's 2 GiB per-asset limit).
 
 ## Quick setup
 
 ```bash
 # From project root, with uv + Python 3.12 venv
-./scripts/update_deps.sh --sync --cuda cu132
+./scripts/update_deps.sh --sync
 
 # Wheel Kreuzberg com ort-dynamic (PaddleOCR nativo em CUDA).
 # Necessário na primeira vez, ou se vendor/wheels/ estiver vazio.
@@ -43,20 +39,23 @@ R615, and PyTorch has no stable `cu134` wheels yet. The Nemotron venv keeps torc
 
 ```bash
 nvidia-smi
-.venv/bin/python -c "import torch; print(torch.__version__); print('CUDA:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
+.venv/bin/python test_setup.py                 # GPU via NVML + CUDAExecutionProvider do ORT
 .venv/bin/python scripts/probe_kreuzberg_cuda.py
 ```
 
-Expect something like `2.14.0+cu132`, `CUDA: True`, and your RTX 50 GPU name.
+Expect your RTX 50 GPU name and `onnxruntime-gpu com CUDAExecutionProvider`.
 
 ## Common issues
 
-- **`+cpu` torch** — reinstall via the cu132 index / `update_deps.sh` (never mix PyPI CPU torch with CUDA).
+- **ORT falls back to CPU** — a CUDA/cuDNN library is missing; re-run `update_deps.sh --sync` (the
+  `[cuda,cudnn]` extras install them). ORT loads cuDNN only when a convolution runs, so a session that
+  merely *lists* `CUDAExecutionProvider` does not prove cuDNN is present.
 - **Python ≥ 3.13** — CUDA wheels often lag; recreate the venv on 3.12.
 - **Paddle (qualquer pacote Python)** — uninstall `paddleocr`, `paddlex`, `paddlepaddle`, `paddlepaddle-gpu`. O PaddleOCR nativo roda pelo Kreuzberg; o modo GPU separado usa `rapidocr` + `onnxruntime-gpu`.
 - **EasyOCR** — uninstall `easyocr` (substituído por RapidOCR no modo GPU).
+- **PyTorch / transformers** — uninstall (`check_dep_conflicts.py` fails on them); the app no longer uses them.
 - **OpenCV** — keep **one** `cv2` (`opencv-python-headless`).
-- **Sandbox / restricted env** — `torch.cuda` may fail inside Cursor sandbox while `nvidia-smi` works on the host; test outside the sandbox.
+- **Sandbox / restricted env** — CUDA may fail inside Cursor sandbox while `nvidia-smi` works on the host; test outside the sandbox.
 
 ## PaddleOCR CPU (Kreuzberg)
 

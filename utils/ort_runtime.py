@@ -61,7 +61,7 @@ def _package_search_paths(name: str) -> List[Path]:
 
 
 def _nvidia_lib_dirs() -> List[Path]:
-    """CUDA/cuDNN dirs shipped by nvidia-* wheels and PyTorch."""
+    """CUDA/cuDNN dirs shipped by nvidia-* wheels (and PyTorch, if present)."""
     candidates: List[Path] = []
     for root in _package_search_paths("nvidia"):
         if not root.is_dir():
@@ -71,6 +71,8 @@ def _nvidia_lib_dirs() -> List[Path]:
                 continue
             for name in ("bin", "lib", "lib64"):
                 candidates.append(sub / name)
+            # CUDA 13 wheels on Windows: nvidia/cu13/bin/x86_64
+            candidates.append(sub / "bin" / "x86_64")
 
     for torch_dir in _package_search_paths("torch"):
         candidates.append(torch_dir / "lib")
@@ -137,7 +139,7 @@ def _find_ort_library(capi: Path) -> Optional[Path]:
 
 
 def preload_cuda_runtime() -> None:
-    """Expose CUDA/cuDNN from nvidia/torch wheels to ORT's dynamic loader."""
+    """Expose CUDA/cuDNN from nvidia-* wheels to ORT's dynamic loader."""
     dirs = _nvidia_lib_dirs()
     _add_library_dirs(dirs)
     if dirs:

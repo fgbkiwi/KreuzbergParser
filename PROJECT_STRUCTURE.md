@@ -17,7 +17,7 @@ KreuzbergParser/
 │
 ├── README.md
 ├── QUICKSTART.md
-├── GPU_SETUP.md                 # RTX 5060 Ti / cu132 / Nemotron / Ollama
+├── GPU_SETUP.md                 # RTX 5060 Ti / CUDA 13 / Nemotron / Ollama
 ├── kreuzberg.toml               # Perfil nativo PaddleOCR GPU (CUDA)
 ├── docs/DEPENDENCY_CONFLICTS.md
 │
@@ -29,7 +29,6 @@ KreuzbergParser/
 │   ├── form_templates.py        # TRCT, ficha, recibo, FGTS
 │   ├── labor_forms.py           # Formatadores por tipo de doc
 │   ├── vlm_ocr.py               # Cliente OpenAI-compatível
-│   ├── handwriting_detector.py  # TrOCR opcional
 │   └── markdown_converter.py
 │
 ├── ui/app.py                    # Flet: modos, dropdown VLM, updates no loop
@@ -122,17 +121,7 @@ KreuzbergParser/
 - ocr_pipeline.py
 - pdf_handler.py
 
-### 4️⃣ core/handwriting_detector.py (180 linhas)
-**Propósito**: Detecção de manuscrito com TrOCR
-**Funcionalidades**:
-- Lazy loading do modelo TrOCR
-- Extração de texto manuscrito
-- Estimativa de confiança
-- Integração com GPU
-
-**Único código OCR customizado necessário**
-
-### 5️⃣ core/markdown_converter.py (180 linhas)
+### 4️⃣ core/markdown_converter.py (180 linhas)
 **Propósito**: Geração de relatórios Markdown
 **Funcionalidades**:
 - Formatação estruturada
@@ -140,7 +129,7 @@ KreuzbergParser/
 - Informações por página
 - UTF-8 encoding
 
-### 6️⃣ ui/app.py
+### 5️⃣ ui/app.py
 **Propósito**: Interface gráfica Flet
 **Componentes**:
 - File pickers (PDF e pasta)
@@ -151,15 +140,15 @@ KreuzbergParser/
 
 **Atualização da UI (Flet 0.86):** `page.update()` **não** pode ser chamado da thread de OCR. A fila roda em thread de worker; log/barra saltam para o loop da sessão (`utils/flet_ui.py`). Sem isso, a tela só refresca ao ganhar ou perder foco.
 
-### 7️⃣ utils/gpu_detector.py (75 linhas)
+### 6️⃣ utils/gpu_detector.py (75 linhas)
 **Propósito**: Detecção e validação de GPU
 **Funcionalidades**:
-- Detecção CUDA
+- Detecção de GPU via NVML (nvidia-ml-py, sem PyTorch)
 - Info de VRAM
 - Validação de requisitos
 - Logging de status
 
-### 8️⃣ utils/logger.py (58 linhas)
+### 7️⃣ utils/logger.py (58 linhas)
 **Propósito**: Sistema de logging
 **Funcionalidades**:
 - Console handler
@@ -167,7 +156,7 @@ KreuzbergParser/
 - Formato configurável
 - UTF-8 encoding
 
-### 9️⃣ utils/flet_ui.py
+### 8️⃣ utils/flet_ui.py
 **Propósito**: Marshaling de patches Flet para o event loop da sessão
 **Por quê**: `FletSocketServer.send_message` usa `asyncio.Queue.put_nowait`, que não é thread-safe. `page.update()` fora do loop só chega ao Flutter no próximo evento da janela (foco/clique).
 **Uso**: `session_loop(page)`, `is_on_session_loop(page)`, `call_on_session_loop(...)`. Reutilizável em outros apps Flet 0.70+/0.86.
@@ -207,9 +196,6 @@ KreuzbergParser/
                    │                                   ├─> Table detection
                    │                                   └─> Language detection
                    │
-                   ├─────> (Opcional) handwriting_detector.py
-                   │           └─────> TrOCR para manuscrito
-                   │
                    └─────> markdown_converter.py
                                └─────> Gerar relatório .md
 ```
@@ -230,12 +216,12 @@ flet==0.21.0              # Framework UI moderno
 pillow==10.1.0            # Manipulação de imagens
 ```
 
-### Opcionais (GPU Mode + Handwriting)
+### GPU (modos GPU)
 
 ```python
-torch==2.1.0              # PyTorch para TrOCR
-torchvision==0.16.0       # Suporte de visão computacional
-transformers==4.35.0      # HuggingFace TrOCR model
+onnxruntime-gpu[cuda,cudnn]  # RapidOCR / PaddleOCR nativo em CUDA 13
+                             # (extras trazem as libs CUDA/cuDNN como wheels nvidia-*)
+nvidia-ml-py                 # Detecção de GPU/VRAM via NVML (sem PyTorch)
 ```
 
 ### Utilitários
@@ -265,9 +251,8 @@ python-dotenv==1.0.0      # Configuração .env
 ### 🚀 GPU
 - **Backend**: RapidOCR CUDA
 - **DPI**: 300 (formulários)
-- **Handwriting**: TrOCR opcional
 - **VLM**: Qwen (Ollama) ou Nemotron Parse (vLLM em `.venv-nemotron`)
-- **Requisitos**: NVIDIA + PyTorch cu132 (RTX 50)
+- **Requisitos**: NVIDIA com driver 580+ (CUDA 13)
 
 ---
 

@@ -59,7 +59,6 @@ def should_run_check(marker: Path = DEFAULT_MARKER, interval_days: float = DEFAU
 def run_dependency_check(
     *,
     timeout_s: float = 600.0,
-    cuda_tag: str = "cu132",
 ) -> subprocess.CompletedProcess[str]:
     """Run update_deps.sh --check. Does not write requirements.txt."""
     if not UPDATE_SCRIPT.is_file():
@@ -68,8 +67,6 @@ def run_dependency_check(
         "bash",
         str(UPDATE_SCRIPT),
         "--check",
-        "--cuda",
-        cuda_tag,
     ]
     return subprocess.run(
         cmd,
@@ -91,14 +88,13 @@ def _run_check_body(
     *,
     log: logging.Logger,
     marker: Path,
-    cuda_tag: str,
     timeout_s: float,
 ) -> Optional[int]:
     log.info(
         "Verificando atualizações de dependências (aviso apenas; não instala)..."
     )
     try:
-        result = run_dependency_check(timeout_s=timeout_s, cuda_tag=cuda_tag)
+        result = run_dependency_check(timeout_s=timeout_s)
     except FileNotFoundError as exc:
         log.warning("Checagem de deps ignorada: %s", exc)
         return None
@@ -150,7 +146,6 @@ def maybe_check_dependency_updates(
     interval_days: float = DEFAULT_DAYS,
     force: bool = False,
     marker: Path = DEFAULT_MARKER,
-    cuda_tag: str = "cu132",
     timeout_s: float = 600.0,
     background: bool = False,
 ) -> Optional[int]:
@@ -176,7 +171,6 @@ def maybe_check_dependency_updates(
             kwargs={
                 "log": log,
                 "marker": marker,
-                "cuda_tag": cuda_tag,
                 "timeout_s": timeout_s,
             },
             name="dep-update-check",
@@ -189,7 +183,6 @@ def maybe_check_dependency_updates(
     return _run_check_body(
         log=log,
         marker=marker,
-        cuda_tag=cuda_tag,
         timeout_s=timeout_s,
     )
 
@@ -210,11 +203,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Ignore the last-check marker and run now",
     )
     parser.add_argument(
-        "--cuda",
-        default="cu132",
-        help="PyTorch CUDA tag passed to update_deps.sh (default cu132)",
-    )
-    parser.add_argument(
         "--marker",
         type=Path,
         default=DEFAULT_MARKER,
@@ -230,7 +218,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         interval_days=args.days,
         force=args.force,
         marker=args.marker,
-        cuda_tag=args.cuda,
     )
     if rc is None:
         print("Skipped (within interval). Use --force to run now.")

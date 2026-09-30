@@ -1,10 +1,19 @@
 """
 GPU detection utility - simplified version
+
+Uses NVML (nvidia-ml-py, shipped with the NVIDIA driver's libnvidia-ml /
+nvml.dll) instead of torch, so the app does not need PyTorch just to find the
+GPU. NVML enumerates devices in PCI bus order and ignores CUDA_VISIBLE_DEVICES;
+CUDA_DEVICE_ID selects the device by that index.
 """
 import os
-import torch
 import logging
 from typing import Dict, Optional
+
+try:
+    import pynvml  # nvidia-ml-py
+except ImportError:  # pragma: no cover - dependency missing in a broken install
+    pynvml = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +26,38 @@ def _env_device_id() -> int:
         return 0
 
 
+def _nvml_init() -> bool:
+    """Initialize NVML; False when there is no NVIDIA driver/GPU."""
+    if pynvml is None:
+        logger.debug("nvidia-ml-py not installed; GPU detection disabled")
+        return False
+    try:
+        pynvml.nvmlInit()
+        return True
+    except pynvml.NVMLError as exc:
+        logger.debug("NVML init failed: %s", exc)
+        return False
+
+
 class GPUDetector:
     """Detects and validates GPU for OCR processing"""
 
     def __init__(self, device_id: Optional[int] = None):
-        self.cuda_available = torch.cuda.is_available()
-        self.device_count = torch.cuda.device_count() if self.cuda_available else 0
+        self.cuda_available = False
+        self.device_count = 0
+        self._handle = None
+        self._name = "N/A"
+        self._compute_capability = "N/A"
         requested = _env_device_id() if device_id is None else int(device_id)
-        if self.cuda_available and self.device_count > 0:
+
+        if _nvml_init():
+            try:
+                self.device_count = int(pynvml.nvmlDeviceGetCount())
+            except pynvml.NVMLError as exc:
+                logger.debug("nvmlDeviceGetCount failed: %s", exc)
+            self.cuda_available = self.device_count > 0
+
+        if self.cuda_available:
             if requested >= self.device_count:
                 logger.warning(
                     "CUDA_DEVICE_ID=%s out of range (count=%s); using 0",
@@ -32,15 +65,26 @@ class GPUDetector:
                     self.device_count,
                 )
                 requested = 0
-            self.device_id = requested
-            self.device_properties = torch.cuda.get_device_properties(self.device_id)
-        else:
-            self.device_id = requested
-            self.device_properties = None
+            try:
+                self._handle = pynvml.nvmlDeviceGetHandleByIndex(requested)
+                name = pynvml.nvmlDeviceGetName(self._handle)
+                self._name = name.decode() if isinstance(name, bytes) else str(name)
+                major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(self._handle)
+                self._compute_capability = f"{major}.{minor}"
+            except pynvml.NVMLError as exc:
+                logger.warning("NVML could not query cuda:%s: %s", requested, exc)
+                self._handle = None
+                self.cuda_available = False
+        self.device_id = requested
+
+    def _memory_gb(self) -> tuple[float, float]:
+        """(total, free) VRAM in GB for the selected device."""
+        info = pynvml.nvmlDeviceGetMemoryInfo(self._handle)
+        return info.total / (1024 ** 3), info.free / (1024 ** 3)
 
     def get_gpu_info(self) -> Dict:
         """Returns detailed GPU information"""
-        if not self.cuda_available or self.device_properties is None:
+        if not self.cuda_available or self._handle is None:
             return {
                 'available': False,
                 'name': 'N/A',
@@ -52,25 +96,22 @@ class GPUDetector:
                 'message': 'CUDA não disponível. GPU mode não estará disponível.'
             }
 
-        total_memory = self.device_properties.total_memory
-        vram_gb = total_memory / (1024 ** 3)
-
-        torch.cuda.empty_cache()
-        free_memory = torch.cuda.mem_get_info(self.device_id)[0]
-        vram_free_gb = free_memory / (1024 ** 3)
-
-        compute_capability = f"{self.device_properties.major}.{self.device_properties.minor}"
+        try:
+            vram_gb, vram_free_gb = self._memory_gb()
+        except pynvml.NVMLError as exc:
+            logger.warning("NVML memory query failed: %s", exc)
+            vram_gb, vram_free_gb = 0.0, 0.0
 
         return {
             'available': True,
-            'name': self.device_properties.name,
+            'name': self._name,
             'device_id': self.device_id,
             'device_count': self.device_count,
             'vram_gb': round(vram_gb, 2),
             'vram_free_gb': round(vram_free_gb, 2),
-            'compute_capability': compute_capability,
+            'compute_capability': self._compute_capability,
             'message': (
-                f"✅ {self.device_properties.name} (cuda:{self.device_id}) "
+                f"✅ {self._name} (cuda:{self.device_id}) "
                 f"com {vram_gb:.1f}GB VRAM"
             )
         }

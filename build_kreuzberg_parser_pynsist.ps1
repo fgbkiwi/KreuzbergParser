@@ -313,22 +313,13 @@ if (-not (Test-Path $pkgsOut)) {
 
 Write-Host "  Completando deps nativas / metadados do venv..." -ForegroundColor Gray
 $extraItems = @(
-    "torchgen",
-    "functorch",
+    # Namespace package sem __init__ (o Pynsist nao o copia via packages=):
+    # DLLs CUDA 13 / cuDNN 9 que o onnxruntime-gpu carrega (preload_dlls).
+    "nvidia",
+    "pynvml.py",
     "typing_extensions.py",
-    "huggingface_hub",
-    "tokenizers",
-    "safetensors",
-    "regex",
     "requests",
     "packaging",
-    "filelock",
-    "fsspec",
-    "jinja2",
-    "networkx",
-    "sympy",
-    "mpmath",
-    "markupsafe",
     "certifi",
     "charset_normalizer",
     "idna",
@@ -395,6 +386,14 @@ if (-not (Test-Path (Join-Path $pkgsOut "rich"))) {
     exit 1
 }
 Write-Host "  Verificacao Flet/rich OK" -ForegroundColor Gray
+# Sem estas DLLs o ORT cai para CPU em silencio nos modos GPU.
+foreach ($cudaDll in @("nvidia\cudnn\bin\cudnn64_9.dll", "nvidia\cu13\bin\x86_64\cublas64_13.dll")) {
+    if (-not (Test-Path (Join-Path $pkgsOut $cudaDll))) {
+        Write-Error "DLL CUDA ausente em pkgs: $cudaDll. Rode .\scripts\update_deps.ps1 -Sync (onnxruntime-gpu[cuda,cudnn])."
+        exit 1
+    }
+}
+Write-Host "  Verificacao DLLs CUDA/cuDNN OK" -ForegroundColor Gray
 
 # Se o mapeamento files= aninhar *.libs\*.libs, desfaz.
 foreach ($libsName in @("numpy.libs", "scipy.libs", "shapely.libs", "pandas.libs")) {
@@ -662,7 +661,7 @@ Instalador Windows do $APP_NAME $VERSION.
 
 Baixe o arquivo .exe e execute o assistente de instalacao.
 
-Requisitos: Windows 64-bit, driver NVIDIA atualizado para modos GPU (PyTorch cu132).
+Requisitos: Windows 64-bit; modos GPU exigem driver NVIDIA 580+ (CUDA 13).
 Poppler e tessdata sao baixados na primeira execucao.
 "@
 

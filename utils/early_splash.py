@@ -1,6 +1,6 @@
 """Early Windows splash shown before Flet / heavy imports are ready.
 
-The installed app can take several seconds to import Torch/Kreuzberg/etc.
+The installed app can take several seconds to import Kreuzberg/ONNX Runtime/etc.
 This module opens a lightweight Win32 window (ctypes + Pillow only) so the
 user sees the animated branding immediately, with an \"Aguarde...\" caption
 drawn under the GIF's own \"Kiwi Down\" text (no extra footer band).

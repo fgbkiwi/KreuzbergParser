@@ -2,7 +2,6 @@
 Core modules initialization
 """
 from .kreuzberg_engine import KreuzbergOCREngine
-from .handwriting_detector import HandwritingDetector
 from .markdown_converter import MarkdownConverter
 from .form_templates import try_structured_extraction, ExtractionResult
 from .vlm_ocr import parse_page_image, reset_vlm_health, vlm_available
@@ -20,7 +19,6 @@ from .pje_sumario import (
 
 __all__ = [
     "KreuzbergOCREngine",
-    "HandwritingDetector",
     "MarkdownConverter",
     "try_structured_extraction",
     "ExtractionResult",
