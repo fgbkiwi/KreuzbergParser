@@ -100,7 +100,7 @@ def check_python_version(python: Path) -> None:
 
 
 def main() -> int:
-    cuda_tag = sys.argv[1] if len(sys.argv) > 1 else "cu130"
+    cuda_tag = sys.argv[1] if len(sys.argv) > 1 else "cu132"
     if len(sys.argv) > 2:
         venv_python = Path(sys.argv[2])
     else:

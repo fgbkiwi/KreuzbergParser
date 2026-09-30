@@ -91,7 +91,7 @@ Otimizado para **PDFs gerados pelo PJe-JT**: cabeçalhos e rodapés de petiçõe
 
 - Templates determinísticos (Tesseract TSV + geometria) para TRCT, ficha de registro, recibo e FGTS
 - Fallback VLM só em páginas de formulário/tabela, via endpoint OpenAI-compatível
-- Na UI: **Desligado**, **Qwen2.5-VL (Ollama)** ou **Nemotron Parse (vLLM)**
+- Na UI: **Desligado**, **Qwen2.5-VL (Ollama)**, **Qwen3-VL (Ollama, padrão)**, **Nemotron Parse (vLLM)** ou **PaddleOCR-VL (vLLM)**
 - Nemotron corre em `.venv-nemotron` (não misturar com o `.venv` do OCR) — ver `[GPU_SETUP.md](GPU_SETUP.md)`
 
 
@@ -102,7 +102,7 @@ Otimizado para **PDFs gerados pelo PJe-JT**: cabeçalhos e rodapés de petiçõe
 - Metadados e estatísticas
 - Nome do arquivo inclui modo + modelo VLM, por exemplo:
   - `Processo_…_ocr_gpu_nemotron.md`
-  - `Processo_…_ocr_gpu_qwen.md`
+  - `Processo_…_ocr_gpu_qwen3.md`
   - `Processo_…_ocr_gpu_nenhum.md`
 - Logs de conversão e auditoria usam o mesmo sufixo; o log genérico da sessão ganha prefixo CNJ e sufixo ao clicar **PROCESSAR PDF**
 
@@ -144,7 +144,7 @@ O pipeline é afinado para PDFs exportados pelo **PJe-JT**:
 
 - Python 3.12
 - 16GB RAM
-- NVIDIA GPU (alvo atual: RTX 50-series, driver 580+, PyTorch **cu130**)
+- NVIDIA GPU (alvo atual: RTX 50-series, driver 580+, PyTorch **cu132**)
 - Driver NVIDIA atualizado; o KreuzbergParser **não** precisa de `nvcc`
 - `nvcc` (CUDA Toolkit 13.0) só para o servidor Nemotron Parse / FlashInfer
 
@@ -195,13 +195,13 @@ O fluxo depende do sistema operacional. Veja a seção
 ```
 
 Isso cria/usa `.venv` (Python 3.12), instala `torch`/`torchvision` do índice CUDA
-(`cu130` por padrão) e o restante a partir de `requirements.in`, com checagem de
+(`cu132` por padrão) e o restante a partir de `requirements.in`, com checagem de
 conflitos. Equivalente manual:
 
 ```powershell
 uv pip install torch torchvision `
   --python .venv\Scripts\python.exe `
-  --index-url https://download.pytorch.org/whl/cu130
+  --index-url https://download.pytorch.org/whl/cu132
 uv pip install -r requirements.in --python .venv\Scripts\python.exe
 ```
 
@@ -211,11 +211,11 @@ uv pip install -r requirements.in --python .venv\Scripts\python.exe
 
 ```bash
 # Preferido: resolve lockfile + sync
-./scripts/update_deps.sh --sync --cuda cu130
+./scripts/update_deps.sh --sync --cuda cu132
 
 # Ou sync direto do lockfile gerado
 uv pip sync requirements.txt \
-  --extra-index-url https://download.pytorch.org/whl/cu130 \
+  --extra-index-url https://download.pytorch.org/whl/cu132 \
   --index-strategy unsafe-best-match
 
 # PaddleOCR GPU nativo: wheel Kreuzberg com ort-dynamic
@@ -266,8 +266,8 @@ brew install tesseract tesseract-lang
 # Verificar CUDA disponível
 python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
-# Se CUDA não disponível, instalar PyTorch com CUDA (RTX 50: cu130):
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+# Se CUDA não disponível, instalar PyTorch com CUDA (RTX 50: cu132):
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu132
 ```
 
 ---
@@ -276,16 +276,16 @@ python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
 ## 🧩 GPU Setup (RapidOCR + TrOCR + PaddleOCR GPU)
 
-Guia atual (RTX 50 / cu130, PaddleOCR nativo, Nemotron, Ollama): `[GPU_SETUP.md](GPU_SETUP.md)`.
+Guia atual (RTX 50 / cu132, PaddleOCR nativo, Nemotron, Ollama): `[GPU_SETUP.md](GPU_SETUP.md)`.
 
 O modo **RapidOCR GPU** usa `rapidocr` + `onnxruntime-gpu` no `.venv`. O modo **PaddleOCR GPU** usa o Kreuzberg nativo (`AccelerationConfig(provider="cuda")`) com o wheel local `ort-dynamic` e `onnxruntime-gpu` — sem fallback para o pacote Python `paddleocr`. Você precisa de:
 
 - Driver NVIDIA atualizado
-- PyTorch `+cu130` (Blackwell / `sm_120`)
+- PyTorch `+cu132` (Blackwell / `sm_120`)
 - `onnxruntime-gpu` e o wheel em `vendor/wheels/`
 
 ```bash
-./scripts/update_deps.sh --sync --cuda cu130
+./scripts/update_deps.sh --sync --cuda cu132
 .venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
 ```
 
@@ -309,7 +309,7 @@ segue um caminho ligeiramente diferente.
 Ao rodar:
 
 ```powershell
-uv pip sync requirements.txt --extra-index-url https://download.pytorch.org/whl/cu130
+uv pip sync requirements.txt --extra-index-url https://download.pytorch.org/whl/cu132
 ```
 
 o resolver tenta instalar pacotes como `nvidia-cufile`, que **não possuem wheel para**
@@ -324,7 +324,7 @@ Após a instalação em duas etapas, parte das bibliotecas entra como dependênc
 PyTorch:
 
 ```
-torch 2.13.0+cu130
+torch 2.14.0+cu132
 ├── filelock
 ├── fsspec
 ├── setuptools
@@ -361,7 +361,7 @@ instalação** para reproducibilidade, não bloqueios rígidos.
 - Só checar conflitos: `.\scripts\update_deps.ps1 -Check`
 - Para regenerar o lockfile completo (incluindo pins Linux), use `./scripts/update_deps.sh` em
 Linux ou WSL.
-- Nesta máquina (RTX 5060 Ti / Blackwell) use o índice `cu130`. Tags mais antigas
+- Nesta máquina (RTX 5060 Ti / Blackwell) use o índice `cu132`. Tags mais antigas
 não incluem `sm_120`.
 
 ---
@@ -412,7 +412,7 @@ stack CUDA/Kreuzberg carrega; a janela some quando a UI Flet fica pronta.
 Para mantenedores (build **no Linux**, Pop!_OS ou Ubuntu 24.04; `gh` se for publicar):
 
 ```bash
-./scripts/update_deps.sh --sync --cuda cu130
+./scripts/update_deps.sh --sync --cuda cu132
 ./scripts/build_kreuzberg_gpu.sh                  # wheel ort-dynamic em vendor/wheels/
 ./build_kreuzberg_parser_deb.sh --no-publish      # gera build/deb/KreuzbergParser_x.y.z_amd64.deb
 ./build_kreuzberg_parser_deb.sh                   # mesma versão + anexa .deb à Release vX.Y.Z
@@ -452,7 +452,7 @@ A interface gráfica será aberta automaticamente.
   - ⚡ Express (Rápido) - Tesseract 200 DPI
   - 💻 CPU - Tesseract 300 DPI + tabelas
   - 🚀 GPU - RapidOCR CUDA
-4. **VLM fallback** (formulários / tabelas): Desligado, Qwen2.5-VL (Ollama) ou Nemotron Parse (vLLM)
+4. **VLM fallback** (formulários / tabelas): Desligado, Qwen2.5-VL (Ollama), Qwen3-VL (Ollama, padrão), Nemotron Parse (vLLM) ou PaddleOCR-VL (vLLM)
 5. **Opções**:
   - ✅ Gerar Markdown (recomendado)
   - 🖋️ Detectar manuscrito (apenas GPU)
@@ -620,7 +620,7 @@ pip install kreuzberg
 
 1. GPU NVIDIA presente: `nvidia-smi`
 2. PyTorch CUDA no `.venv`: `.venv/bin/python -c "import torch; print(torch.cuda.is_available())"`
-3. Wheel `+cu130` (Blackwell / RTX 5060 Ti): `./scripts/update_deps.sh --sync --cuda cu130`
+3. Wheel `+cu132` (Blackwell / RTX 5060 Ti): `./scripts/update_deps.sh --sync --cuda cu132`
 
 `nvcc` **não** é exigido pelo OCR. Só o servidor Nemotron Parse precisa do CUDA Toolkit 13.0.
 
@@ -654,7 +654,7 @@ Se, no Pop!_OS/Wayland, a janela ainda atrasar frames depois disso, teste `GDK_B
 ## 📚 Documentação Adicional
 
 - **[QUICKSTART.md](QUICKSTART.md)** - Instalação e primeiro uso
-- **[GPU_SETUP.md](GPU_SETUP.md)** - RTX 50 / cu130, Ollama, Nemotron Parse
+- **[GPU_SETUP.md](GPU_SETUP.md)** - RTX 50 / cu132, Ollama, Nemotron Parse
 - **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** - Arquivos, fluxo e UI Flet (`utils/flet_ui.py`)
 - **[docs/DEPENDENCY_CONFLICTS.md](docs/DEPENDENCY_CONFLICTS.md)** - o que não misturar nos venvs
 - **[Kreuzberg Docs](https://docs.kreuzberg.dev/)** - Documentação oficial

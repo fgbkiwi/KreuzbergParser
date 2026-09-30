@@ -8,7 +8,7 @@ Orientação atual de GPU: [`GPU_SETUP.md`](../GPU_SETUP.md).
 | Item | Valor |
 |------|--------|
 | Python | **3.12** (wheels CUDA; evitar ≥3.13 neste projeto) |
-| PyTorch | **2.13.0+cu130** |
+| PyTorch | **2.14.0+cu132** |
 | GPU alvo | **NVIDIA GeForce RTX 5060 Ti 16 GB** (Blackwell `sm_120`) |
 | OpenCV | um único `cv2` (`opencv-python-headless` **4.x**, `<5`) |
 | Kreuzberg | wheel local `ort-dynamic` em `vendor/wheels/` (`./scripts/build_kreuzberg_gpu.sh`) |
@@ -17,7 +17,7 @@ Orientação atual de GPU: [`GPU_SETUP.md`](../GPU_SETUP.md).
 
 ### 1. Nunca instalar `torch` do PyPI (CPU) junto com o índice CUDA
 
-O wheel padrão no PyPI é **CPU** (`+cpu` ou sem `+cuXXX`). Se ele entrar no ambiente ao mesmo tempo que builds CUDA (`+cu130`), TrOCR (e o restante do stack PyTorch) podem cair em CPU ou quebrar imports.
+O wheel padrão no PyPI é **CPU** (`+cpu` ou sem `+cuXXX`). Se ele entrar no ambiente ao mesmo tempo que builds CUDA (`+cu132`), TrOCR (e o restante do stack PyTorch) podem cair em CPU ou quebrar imports.
 
 - Resolver/instalar `torch` / `torchvision` **só** a partir do índice PyTorch CUDA.
 - Use `./scripts/update_deps.sh` (Linux) ou `.\scripts\update_deps.ps1` (Windows)
@@ -54,7 +54,9 @@ precisa do **CUDA Toolkit 13.0**, sem trocar o driver Pop!_OS:
 ./scripts/install_cuda_toolkit.sh
 ```
 
-Não instale o `nvidia-cuda-toolkit` 12.0 do Ubuntu/Pop neste hardware (RTX 50 / cu130).
+Não instale o `nvidia-cuda-toolkit` 12.0 do Ubuntu/Pop neste hardware (RTX 50 / cu132).
+Não atualize para o CUDA Toolkit 13.4: o `.venv-nemotron` usa torch `+cu130` e o `nvcc`
+precisa continuar na 13.0 (ver `GPU_SETUP.md`).
 Não instale o metapacote `cuda` da NVIDIA (ele puxa driver e conflita com o 580 do Pop).
 
 ### 5. Python ≥ 3.13: wheels CUDA atrasam
@@ -76,7 +78,7 @@ Kreuzberg embute Tesseract e usa `TESSDATA_PREFIX` apontando para `tessdata/` do
 
 ```bash
 uv pip sync requirements.txt \
-  --extra-index-url https://download.pytorch.org/whl/cu130 \
+  --extra-index-url https://download.pytorch.org/whl/cu132 \
   --index-strategy unsafe-best-match
 ```
 
@@ -96,9 +98,9 @@ não existir, gere-o com `./scripts/build_kreuzberg_gpu.sh`.
 **Não** use `uv pip sync requirements.txt` (pacotes NVIDIA só-Linux). Use:
 
 ```powershell
-.\scripts\update_deps.ps1 -Sync          # torch (cu130) + requirements.in + checagem
+.\scripts\update_deps.ps1 -Sync          # torch (cu132) + requirements.in + checagem
 .\scripts\update_deps.ps1 -Check         # só valida conflitos no .venv
-.\scripts\update_deps.ps1 -Cuda cu130    # índice PyTorch (padrão)
+.\scripts\update_deps.ps1 -Cuda cu132    # índice PyTorch (padrão)
 ```
 
 O script remove pacotes Paddle/EasyOCR / `nvidia-cufile*` se aparecerem e

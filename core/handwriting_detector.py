@@ -14,12 +14,19 @@ if TYPE_CHECKING:
     from PIL.Image import Image as PILImage
 
 try:
-    from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+    from transformers import (
+        AutoImageProcessor,
+        RobertaTokenizer,
+        TrOCRProcessor,
+        VisionEncoderDecoderModel,
+    )
     from PIL import Image
     import torch
 
     TROCR_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional runtime dependency
+    AutoImageProcessor = None  # type: ignore[misc, assignment]
+    RobertaTokenizer = None  # type: ignore[misc, assignment]
     TrOCRProcessor = None  # type: ignore[misc, assignment]
     VisionEncoderDecoderModel = None  # type: ignore[misc, assignment]
     Image = None  # type: ignore[misc, assignment]
@@ -69,11 +76,22 @@ class HandwritingDetector:
 
         try:
             logger.info("Loading TrOCR model...")
-            self.processor = TrOCRProcessor.from_pretrained(self.config.TROCR_MODEL)
+            # The TrOCR repos ship only vocab.json/merges.txt (no tokenizer.json),
+            # which TrOCRProcessor.from_pretrained cannot load on transformers 5.x.
+            self.processor = TrOCRProcessor(
+                image_processor=AutoImageProcessor.from_pretrained(
+                    self.config.TROCR_MODEL
+                ),
+                tokenizer=RobertaTokenizer.from_pretrained(self.config.TROCR_MODEL),
+            )
             self.model = VisionEncoderDecoderModel.from_pretrained(
                 self.config.TROCR_MODEL
             )
             self.model.to(self.device)
+            if self.device == "cuda":
+                # Half precision: ~2x faster and half the VRAM on the GPU.
+                self.model.half()
+            self.model.eval()
             logger.info("TrOCR model loaded successfully")
             return True
 
@@ -159,13 +177,14 @@ class HandwritingDetector:
                 return_tensors="pt",
             ).pixel_values
 
-            pixel_values = pixel_values.to(self.device)
+            pixel_values = pixel_values.to(self.device, dtype=self.model.dtype)
 
             # Generate text
-            generated_ids = self.model.generate(
-                pixel_values,
-                max_length=self.config.TROCR_MAX_LENGTH,
-            )
+            with torch.inference_mode():
+                generated_ids = self.model.generate(
+                    pixel_values,
+                    max_length=self.config.TROCR_MAX_LENGTH,
+                )
 
             # Decode
             generated_text = self.processor.batch_decode(

@@ -10,7 +10,7 @@
 #   .\scripts\update_deps.ps1                 # install/upgrade into .venv
 #   .\scripts\update_deps.ps1 -Sync           # same (alias for clarity)
 #   .\scripts\update_deps.ps1 -Check          # conflict check only
-#   .\scripts\update_deps.ps1 -Cuda cu130     # PyTorch CUDA/CPU index
+#   .\scripts\update_deps.ps1 -Cuda cu132     # PyTorch CUDA/CPU index
 #   .\scripts\update_deps.ps1 -Cuda cpu
 #   .\scripts\update_deps.ps1 -NoUpgrade      # install without --upgrade
 #   .\scripts\update_deps.ps1 -Python 3.12
@@ -19,8 +19,8 @@
 # ============================================================
 
 param(
-    [ValidateSet("cu118", "cu121", "cu124", "cu126", "cu128", "cu130", "cpu")]
-    [string]$Cuda = "cu130",
+    [ValidateSet("cu118", "cu121", "cu124", "cu126", "cu128", "cu130", "cu132", "cpu")]
+    [string]$Cuda = "cu132",
 
     [string]$Python = "3.12",
 
@@ -159,7 +159,9 @@ if (-not $NoUpgrade) {
 }
 
 Write-Step "Installing PyTorch ($Cuda) from $IndexUrl"
-uv pip install torch torchvision `
+# Floor on torchvision: the PyTorch index mirrors ancient unpinned wheels
+# (0.1.x) that the resolver picks when a torch patch ships ahead of it.
+uv pip install torch "torchvision>=0.26" `
     --python $PythonExe `
     --index-url $IndexUrl `
     @UpgradeArgs

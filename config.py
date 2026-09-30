@@ -242,9 +242,10 @@ class Config:
     ENABLE_VLM_FALLBACK = True
     # OpenAI-compatible endpoint. Ollama: http://127.0.0.1:11434/v1
     # vLLM Nemotron Parse: http://127.0.0.1:8000/v1
+    # vLLM PaddleOCR-VL: http://127.0.0.1:8001/v1
     # NVIDIA NIM (sends documents off-machine): https://integrate.api.nvidia.com/v1
     VLM_BASE_URL = os.environ.get("VLM_BASE_URL", "http://127.0.0.1:11434/v1")
-    VLM_MODEL = os.environ.get("VLM_MODEL", "qwen2.5vl:7b")
+    VLM_MODEL = os.environ.get("VLM_MODEL", "qwen3-vl:8b-instruct")
     VLM_API_KEY = os.environ.get("VLM_API_KEY", os.environ.get("NVIDIA_API_KEY", ""))
     VLM_TIMEOUT_S = float(os.environ.get("VLM_TIMEOUT_S", "90"))
     VLM_PRESETS = {
@@ -260,14 +261,40 @@ class Config:
             "base_url": "http://127.0.0.1:11434/v1",
             "model": "qwen2.5vl:7b",
         },
+        "qwen3": {
+            "label": "Qwen3-VL (Ollama)",
+            "enabled": True,
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen3-vl:8b-instruct",
+        },
         "nemotron": {
             "label": "Nemotron Parse (vLLM)",
             "enabled": True,
             "base_url": "http://127.0.0.1:8000/v1",
             "model": "nvidia/NVIDIA-Nemotron-Parse-2.0",
         },
+        "paddleocr_vl": {
+            "label": "PaddleOCR-VL (vLLM)",
+            "enabled": True,
+            "base_url": "http://127.0.0.1:8001/v1",
+            "model": "PaddlePaddle/PaddleOCR-VL-1.6",
+        },
     }
-    # UI / CLI key: off | qwen | nemotron
+    # Per preset: substrings that let VLM_BASE_URL / VLM_MODEL override it.
+    _VLM_ENV_MATCH = {
+        "qwen": (("11434",), "qwen2.5"),
+        "qwen3": (("11434",), "qwen3"),
+        "nemotron": (("8000", "nvidia.com"), "nemotron"),
+        "paddleocr_vl": (("8001",), "paddleocr-vl"),
+    }
+    # Filename token per preset (see vlm_model_tag).
+    _VLM_FILE_TAGS = {
+        "qwen": "qwen",
+        "qwen3": "qwen3",
+        "nemotron": "nemotron",
+        "paddleocr_vl": "paddlevl",
+    }
+    # UI / CLI key: off | qwen | qwen3 | nemotron | paddleocr_vl
     VLM_BACKEND = os.environ.get("VLM_BACKEND", "").strip().lower()
 
     @classmethod
@@ -281,6 +308,10 @@ class Config:
         url = (cls.VLM_BASE_URL or "").lower()
         if "nemotron" in model or ":8000" in url:
             return "nemotron"
+        if "paddleocr-vl" in model or ":8001" in url:
+            return "paddleocr_vl"
+        if "qwen3" in model:
+            return "qwen3"
         return "qwen"
 
     @classmethod
@@ -289,30 +320,20 @@ class Config:
         preset = dict(cls.VLM_PRESETS[key])
         preset["key"] = key
         if key != "off":
-            if cls.VLM_BASE_URL and (
-                (key == "qwen" and "11434" in cls.VLM_BASE_URL)
-                or (key == "nemotron" and "8000" in cls.VLM_BASE_URL)
-                or (key == "nemotron" and "nvidia.com" in cls.VLM_BASE_URL)
-            ):
+            url_marks, model_mark = cls._VLM_ENV_MATCH[key]
+            if cls.VLM_BASE_URL and any(m in cls.VLM_BASE_URL for m in url_marks):
                 preset["base_url"] = cls.VLM_BASE_URL
-            if cls.VLM_MODEL and (
-                (key == "qwen" and "qwen" in cls.VLM_MODEL.lower())
-                or (key == "nemotron" and "nemotron" in cls.VLM_MODEL.lower())
-            ):
+            if cls.VLM_MODEL and model_mark in cls.VLM_MODEL.lower():
                 preset["model"] = cls.VLM_MODEL
         return preset
 
     @classmethod
     def vlm_model_tag(cls, backend: str | None = None, *, enabled: bool | None = None) -> str:
-        """Filename token for the VLM in use: nemotron | qwen | nenhum."""
+        """Filename token for the VLM in use: nemotron | qwen | qwen3 | paddlevl | nenhum."""
         if enabled is False:
             return "nenhum"
         key = cls.resolve_vlm_backend(backend)
-        if key == "nemotron":
-            return "nemotron"
-        if key == "qwen":
-            return "qwen"
-        return "nenhum"
+        return cls._VLM_FILE_TAGS.get(key, "nenhum")
 
     @classmethod
     def run_file_suffix(

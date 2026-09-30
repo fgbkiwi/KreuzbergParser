@@ -2,7 +2,7 @@
 # Compila o wheel Python do Kreuzberg com suporte a GPU (PaddleOCR nativo em CUDA).
 #
 # Por que isso existe:
-#   O wheel do PyPI (kreuzberg==4.10.2) é compilado com a feature Rust
+#   O wheel do PyPI (kreuzberg==4.10.4) é compilado com a feature Rust
 #   `ort-bundled`: o binário linka um ONNX Runtime só-CPU embutido, ignora
 #   ORT_DYLIB_PATH e o crate `ort` descarta o registro do CUDAExecutionProvider
 #   ("corresponding Cargo feature is not enabled"). Resultado: PaddleOCR nativo
@@ -25,7 +25,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KREUZBERG_TAG="v4.10.2"
+KREUZBERG_TAG="v4.10.4"
 REPO_URL="https://github.com/kreuzberg-dev/kreuzberg-lts"
 SRC_DIR="${TMPDIR:-/tmp}/kreuzberg-gpu-src"
 WHEEL_DIR="${ROOT}/vendor/wheels"

@@ -7,15 +7,22 @@
 #
 # Pré-requisitos (build no Linux):
 #   uv, dpkg-deb, Python 3.12 (via uv python)
-#   ./scripts/update_deps.sh --sync --cuda cu130
+#   ./scripts/update_deps.sh --sync --cuda cu132
 #   ./scripts/build_kreuzberg_gpu.sh   # gera vendor/wheels/kreuzberg-*.whl
 #   gh autenticado — só se for publicar
 #
 # Uso:
-#   ./build_kreuzberg_parser_deb.sh --no-publish          # gera .deb (sem bump)
-#   ./build_kreuzberg_parser_deb.sh --bump patch          # bump + .deb + upload
+#   ./build_kreuzberg_parser_deb.sh --no-publish          # gera .deb (sem bump, sem git)
+#   ./build_kreuzberg_parser_deb.sh --bump patch          # bump + .deb + commit/tag/push + Release
+#   ./build_kreuzberg_parser_deb.sh                       # versão atual + tag (se faltar) + Release
 #   ./build_kreuzberg_parser_deb.sh --bump minor --no-publish
-#   ./build_kreuzberg_parser_deb.sh --cuda cu130 --no-publish
+#   ./build_kreuzberg_parser_deb.sh --cuda cu132 --no-publish
+#   ./build_kreuzberg_parser_deb.sh --allow-dirty ...     # permite working tree sujo
+#
+# Ao publicar, o script exige working tree limpo e em dia com o remoto,
+# faz commit do bump (main.py, pyproject.toml, .cfg), cria a tag vX.Y.Z,
+# faz push de branch + tag e cria a Release (ou anexa o .deb se a Release
+# da mesma versão já existir — p.ex. criada pelo build do Windows).
 # ============================================================
 set -euo pipefail
 
@@ -30,13 +37,15 @@ ICON_SOURCE="assets/kreuzberg-parser.png"
 PACKAGING_DIR="packaging/linux"
 REQ_FILE="requirements.txt"
 BUMP_SCRIPT="bump_version.py"
+VERSION_FILES=(main.py pyproject.toml kreuzberg_parser_pynsist.cfg)
 
-CUDA_TAG="cu130"
+CUDA_TAG="cu132"
 DO_PUBLISH=1
 BUMP_PART=""  # empty = no bump (default: attach to same tag as Windows)
+ALLOW_DIRTY=0
 
 usage() {
-  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -54,13 +63,14 @@ while [[ $# -gt 0 ]]; do
     -h|--help) usage 0 ;;
     --no-publish) DO_PUBLISH=0; shift ;;
     --no-bump) BUMP_PART=""; shift ;;
+    --allow-dirty) ALLOW_DIRTY=1; shift ;;
     --bump)
       [[ $# -ge 2 ]] || die "--bump requires patch|minor|major"
       BUMP_PART="$2"
       shift 2
       ;;
     --cuda)
-      [[ $# -ge 2 ]] || die "--cuda requires a tag (e.g. cu130)"
+      [[ $# -ge 2 ]] || die "--cuda requires a tag (e.g. cu132)"
       CUDA_TAG="$2"
       shift 2
       ;;
@@ -93,7 +103,7 @@ GPU_WHEEL="$(ls -1 "${ROOT}"/vendor/wheels/kreuzberg-*.whl 2>/dev/null | sort | 
 pytorch_index_url() {
   case "$1" in
     cpu) echo "https://download.pytorch.org/whl/cpu" ;;
-    cu118|cu121|cu124|cu126|cu128|cu130) echo "https://download.pytorch.org/whl/$1" ;;
+    cu118|cu121|cu124|cu126|cu128|cu130|cu132) echo "https://download.pytorch.org/whl/$1" ;;
     *) die "unsupported CUDA tag '$1'" ;;
   esac
 }
@@ -102,7 +112,36 @@ INDEX_URL="$(pytorch_index_url "$CUDA_TAG")"
 if [[ "$DO_PUBLISH" -eq 1 ]]; then
   command -v gh >/dev/null 2>&1 || die "GitHub CLI (gh) not found. Install it or use --no-publish."
   gh auth status >/dev/null 2>&1 || die "GitHub CLI not authenticated. Run 'gh auth login' or use --no-publish."
+
+  # --- Git preflight (antes do build, para não desperdiçar um build longo) ---
+  git fetch --quiet --tags origin || die "git fetch failed"
+  if [[ "$ALLOW_DIRTY" -eq 0 && -n "$(git status --porcelain)" ]]; then
+    git status --short >&2
+    die "working tree has uncommitted changes. Commit them first, or use --allow-dirty.
+  (If only the version files are listed, a previous build probably left a bump behind:
+   git checkout -- ${VERSION_FILES[*]})"
+  fi
+  DETACHED=0
+  git symbolic-ref -q HEAD >/dev/null || DETACHED=1  # e.g. building from "git checkout vX.Y.Z"
+  if [[ "$DETACHED" -eq 1 ]]; then
+    [[ -z "$BUMP_PART" ]] || die "cannot --bump on a detached HEAD; check out a branch first"
+  else
+    git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
+      || die "current branch has no upstream; push it first (git push -u origin HEAD)"
+    [[ "$(git rev-list --count 'HEAD..@{u}')" -eq 0 ]] \
+      || die "local branch is behind its upstream. Run 'git pull' first."
+  fi
 fi
+
+# Restores the version files if the script fails after bumping but before committing.
+BUMP_PENDING=0
+restore_bump() {
+  if [[ "$BUMP_PENDING" -eq 1 ]]; then
+    echo "==> Build falhou — revertendo bump em: ${VERSION_FILES[*]}" >&2
+    git checkout -- "${VERSION_FILES[@]}" || true
+  fi
+}
+trap restore_bump EXIT
 
 # --- Version (source of truth: APP_VERSION in main.py) -------------------
 if [[ -n "$BUMP_PART" ]]; then
@@ -114,6 +153,9 @@ if [[ -n "$BUMP_PART" ]]; then
     VERSION="$(python3 "$BUMP_SCRIPT" "$BUMP_PART")"
   fi
   [[ -n "$VERSION" ]] || die "bump_version.py did not print the new version"
+  if [[ "$DO_PUBLISH" -eq 1 && "$ALLOW_DIRTY" -eq 0 ]]; then
+    BUMP_PENDING=1
+  fi
 else
   log "[0/5] Mantendo versão atual (sem bump)..."
   VERSION="$(
@@ -125,6 +167,16 @@ fi
 log "Versão: $VERSION"
 
 TAG="v${VERSION}"
+
+if [[ "$DO_PUBLISH" -eq 1 ]]; then
+  if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+    [[ -z "$BUMP_PART" ]] || die "tag ${TAG} already exists; cannot release a bump to an existing version"
+    [[ "$(git rev-list -n 1 "$TAG")" == "$(git rev-parse HEAD)" ]] \
+      || die "tag ${TAG} exists but points to a different commit than HEAD.
+  Build from the tag (git checkout ${TAG}) or use --bump to release a new version."
+  fi
+fi
+
 OUT_DEB="${ROOT}/build/deb/${APP_NAME}_${VERSION}_amd64.deb"
 STAGING="${ROOT}/build/deb/staging"
 OPT_STAGING="${STAGING}${OPT_PREFIX}"
@@ -291,7 +343,24 @@ if [[ "$DO_PUBLISH" -eq 0 ]]; then
   echo "Ou criar Release se ainda não existir:"
   echo "  gh release create ${TAG} \"${OUT_DEB}\" --repo ${GITHUB_REPO} --title \"${APP_NAME} ${VERSION}\" --latest"
 else
-  log "[5/5] Publicando ${TAG} no GitHub..."
+  log "[5/5] Commit/tag/push e publicação de ${TAG} no GitHub..."
+  if [[ -n "$BUMP_PART" ]]; then
+    git add -- "${VERSION_FILES[@]}"
+    git commit --quiet -m "Release ${TAG}" -- "${VERSION_FILES[@]}"
+    BUMP_PENDING=0
+    log "Commit do bump criado: $(git rev-parse --short HEAD)"
+  fi
+  if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+    git tag -a "$TAG" -m "Release ${TAG}"
+    log "Tag ${TAG} criada em $(git rev-parse --short HEAD)"
+  fi
+  PUSH_REFS=("refs/tags/${TAG}")
+  [[ "$DETACHED" -eq 1 ]] || PUSH_REFS=(HEAD "${PUSH_REFS[@]}")
+  git push --atomic origin "${PUSH_REFS[@]}" || die "git push failed (the .deb is at ${OUT_DEB})"
+  if [[ "$ALLOW_DIRTY" -eq 1 && -n "$(git status --porcelain)" ]]; then
+    echo "Aviso: build feito com --allow-dirty; o .deb inclui alterações que não estão em ${TAG}." >&2
+  fi
+
   NOTES="$(cat <<EOF
 Instalador Linux (.deb amd64) do ${APP_NAME} ${VERSION} para Pop!_OS / Ubuntu.
 
@@ -315,13 +384,11 @@ EOF
       --repo "$GITHUB_REPO" \
       --title "${APP_NAME} ${VERSION}" \
       --notes "$NOTES" \
+      --verify-tag \
       --latest
   fi
 
   echo "Release: https://github.com/${GITHUB_REPO}/releases/tag/${TAG}"
-  if [[ -n "$BUMP_PART" ]]; then
-    echo "Lembre-se de fazer commit/push do bump de versão (${VERSION}) se ainda não estiver no remoto."
-  fi
 fi
 
 echo ""

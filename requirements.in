@@ -14,7 +14,7 @@ rapidocr
 opencv-python-headless>=4.8,<5
 
 # Deep Learning for Handwriting
-# torch / torchvision come from the PyTorch CUDA index (default: cu130 / Blackwell)
+# torch / torchvision come from the PyTorch CUDA index (default: cu132 / Blackwell)
 transformers
 pillow
 

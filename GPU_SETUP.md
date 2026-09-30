@@ -12,18 +12,27 @@ Conflitos: [`docs/DEPENDENCY_CONFLICTS.md`](docs/DEPENDENCY_CONFLICTS.md).
 | GPU | NVIDIA GeForce RTX 5060 Ti (16 GB), Blackwell `sm_120` |
 | Driver | 580+ (`nvidia-smi` reports CUDA 13.0 capability) |
 | Python | **3.12** |
-| PyTorch | **2.13.0+cu130** (or newer `+cu130`) |
-| Index | `https://download.pytorch.org/whl/cu130` |
+| PyTorch | **2.14.0+cu132** (or newer `+cu132`) |
+| Index | `https://download.pytorch.org/whl/cu132` |
 
-Older tags (`cu124`, `cu126`, …) **do not** include `sm_120`. Use **cu130** (or newer Blackwell-capable builds) on this hardware.
+Older tags (`cu124`, `cu126`, …) **do not** include `sm_120`. Use **cu132** (or newer Blackwell-capable builds) on this hardware.
 
 You do **not** need a system CUDA development toolkit for this app — the PyTorch wheel ships the runtime. Only the NVIDIA driver is required.
+
+`cu132` replaced `cu130` as the default: PyTorch ships `cu130` wheels only up to 2.14,
+and CUDA 13.2.2 fixes a compiler bug that could produce silently wrong results. The
+`cu132` wheels run on driver 580 (CUDA minor-version compatibility).
+
+**CUDA Toolkit 13.4** (September 2026) is **not needed**. Its additions (Windows on Arm,
+Rubin preview, MPS V3) do not apply to this app, its new features require driver branch
+R615, and PyTorch has no stable `cu134` wheels yet. The Nemotron venv keeps torch
+`+cu130` with `nvcc` 13.0 (`scripts/install_cuda_toolkit.sh`), which must stay matched.
 
 ## Quick setup
 
 ```bash
 # From project root, with uv + Python 3.12 venv
-./scripts/update_deps.sh --sync --cuda cu130
+./scripts/update_deps.sh --sync --cuda cu132
 
 # Wheel Kreuzberg com ort-dynamic (PaddleOCR nativo em CUDA).
 # Necessário na primeira vez, ou se vendor/wheels/ estiver vazio.
@@ -38,11 +47,11 @@ nvidia-smi
 .venv/bin/python scripts/probe_kreuzberg_cuda.py
 ```
 
-Expect something like `2.13.0+cu130`, `CUDA: True`, and your RTX 50 GPU name.
+Expect something like `2.14.0+cu132`, `CUDA: True`, and your RTX 50 GPU name.
 
 ## Common issues
 
-- **`+cpu` torch** — reinstall via the cu130 index / `update_deps.sh` (never mix PyPI CPU torch with CUDA).
+- **`+cpu` torch** — reinstall via the cu132 index / `update_deps.sh` (never mix PyPI CPU torch with CUDA).
 - **Python ≥ 3.13** — CUDA wheels often lag; recreate the venv on 3.12.
 - **Paddle (qualquer pacote Python)** — uninstall `paddleocr`, `paddlex`, `paddlepaddle`, `paddlepaddle-gpu`. O PaddleOCR nativo roda pelo Kreuzberg; o modo GPU separado usa `rapidocr` + `onnxruntime-gpu`.
 - **EasyOCR** — uninstall `easyocr` (substituído por RapidOCR no modo GPU).
@@ -73,7 +82,7 @@ python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 # Deve incluir CUDAExecutionProvider
 ```
 
-**Importante:** o wheel do PyPI (4.10.2) é compilado com `ort-bundled` — linka um ONNX Runtime só-CPU embutido, ignora `ORT_DYLIB_PATH` e o crate `ort` descarta o registro do CUDA EP em tempo de compilação. Por isso este projeto usa um **wheel local compilado com `ort-dynamic`** (`./scripts/build_kreuzberg_gpu.sh`, salvo em `vendor/wheels/`), que carrega em runtime a lib do `onnxruntime-gpu` via `ORT_DYLIB_PATH` e executa o PaddleOCR nativo em CUDA de verdade. Sem esse wheel, o modo PaddleOCR GPU **falha na inicialização** (não há fallback). Não instale `paddleocr` nem `paddlepaddle-gpu` (o modo GPU usa `rapidocr` de propósito).
+**Importante:** o wheel do PyPI (4.10.4) é compilado com `ort-bundled` — linka um ONNX Runtime só-CPU embutido, ignora `ORT_DYLIB_PATH` e o crate `ort` descarta o registro do CUDA EP em tempo de compilação. Por isso este projeto usa um **wheel local compilado com `ort-dynamic`** (`./scripts/build_kreuzberg_gpu.sh`, salvo em `vendor/wheels/`), que carrega em runtime a lib do `onnxruntime-gpu` via `ORT_DYLIB_PATH` e executa o PaddleOCR nativo em CUDA de verdade. Sem esse wheel, o modo PaddleOCR GPU **falha na inicialização** (não há fallback). Não instale `paddleocr` nem `paddlepaddle-gpu` (o modo GPU usa `rapidocr` de propósito).
 
 Na RTX 5060 Ti (16 GB) o modo GPU usa `model_tier=server`, `padding=16`, lote de 8 páginas e `rec_batch_num=16`.
 
@@ -132,24 +141,67 @@ em `config.py`). Na UI, o dropdown **VLM fallback** escolhe:
 
 - **Desligado (só templates)** — sem VLM
 - **Qwen2.5-VL (Ollama)** — `http://127.0.0.1:11434/v1`
+- **Qwen3-VL (Ollama)** — `http://127.0.0.1:11434/v1` (padrão)
 - **Nemotron Parse (vLLM)** — `http://127.0.0.1:8000/v1`
+- **PaddleOCR-VL (vLLM)** — `http://127.0.0.1:8001/v1`
 
-Arquivos gerados incluem modo + modelo (`gpu_nemotron`, `gpu_qwen`, `gpu_nenhum`):
+Arquivos gerados incluem modo + modelo (`gpu_nemotron`, `gpu_qwen`, `gpu_qwen3`,
+`gpu_paddlevl`, `gpu_nenhum`):
 
 - Markdown: `{stem}_ocr_{modo}_{modelo}.md`
 - Log da UI: `{stem}_log_conversao_{modo}_{modelo}_{timestamp}.txt`
 - Auditoria: `logs/{CNJ}_{modo}_{modelo}_{timestamp}.log`
 - Sessão: `logs/{CNJ}_ocr_{modo}_{modelo}_{timestamp}.log` (renomeado ao clicar PROCESSAR PDF)
 
-### Qwen2.5-VL via Ollama (padrão)
+### Comparação dos VLMs (2026-09-30)
+
+As 11 folhas críticas do PDF-gabarito (TRCT, ficha, recibos, FGTS), a página inteira
+a 300 DPI, contra o markdown do LlamaParse. RTX 5060 Ti 16GB.
+
+| VLM | Valores monetários | Palavras | Tempo/página |
+|---|---|---|---|
+| Qwen2.5-VL 7B (padrão anterior) | 63,8% | 72,1% | 27,0s |
+| **Qwen3-VL 8B instruct** (padrão) | **96,4%** | **93,4%** | 24,3s |
+| PaddleOCR-VL 1.6 | 67,8% | 80,9% | **3,1s** |
+
+Antes desta rodada, o Qwen via Ollama falhava em **todas** as páginas com HTTP 400:
+uma página a 300 DPI ocupa ~4300 tokens e o contexto padrão do Ollama é 4096. O
+`core/vlm_ocr.py` agora usa a API nativa `/api/chat` com `num_ctx=16384`.
+
+### Qwen3-VL via Ollama (padrão)
 
 ```bash
-ollama pull qwen2.5vl:7b
+ollama pull qwen3-vl:8b-instruct   # a tag qwen3-vl:8b é a variante "thinking"
 # API OpenAI-compatível em http://127.0.0.1:11434/v1
 ```
 
-`VLM_MODEL=qwen2.5vl:7b` cabe na RTX 5060 Ti 16GB. Aceita prompt livre (descreve
-logos/assinaturas/QR codes).
+`VLM_MODEL=qwen3-vl:8b-instruct` cabe na RTX 5060 Ti 16GB (~7,8 GB com contexto de
+16k). Aceita prompt livre (descreve logos/assinaturas/QR codes); OCR em 32 idiomas.
+Não use a tag `qwen3-vl:8b`: ela gasta todo o limite de saída raciocinando e devolve
+páginas vazias.
+
+### Qwen2.5-VL via Ollama (anterior)
+
+```bash
+ollama pull qwen2.5vl:7b
+```
+
+Continua disponível no dropdown para comparação.
+
+### PaddleOCR-VL 1.6 via vLLM (em avaliação)
+
+Modelo de 0,9B (Apache-2.0, 109 idiomas) especializado em documentos. Reaproveita o
+`.venv-nemotron` e sobe na porta **8001**, então pode coexistir com o Nemotron:
+
+```bash
+./scripts/setup_nemotron_venv.sh    # só se o .venv-nemotron ainda não existir
+./scripts/start_paddleocr_vl.sh     # sobe em http://127.0.0.1:8001/v1
+PADDLEOCR_VL_GPU_MEM=0.40 ./scripts/start_paddleocr_vl.sh   # mais VRAM, se faltar
+```
+
+Tarefa fixa: o app envia o prompt `OCR:` com a página inteira (`core/vlm_ocr.py`). O
+modelo foi projetado para receber recortes de um detector de layout; em página inteira
+o resultado pode ficar abaixo do benchmark publicado. Validar no PDF-gabarito.
 
 ### NVIDIA Nemotron Parse 2.0 via vLLM (candidato a padrão)
 

@@ -3,6 +3,8 @@
 # Needed by vLLM FlashInfer JIT. Driver 580 already reports CUDA 13.0.
 #
 # Do NOT use Ubuntu's nvidia-cuda-toolkit (12.0) — it is too old for RTX 50 / cu130.
+# Stays on 13.0 on purpose: .venv-nemotron runs torch +cu130, and nvcc must match
+# that runtime. CUDA 13.4 brings nothing this project uses (see GPU_SETUP.md).
 set -euo pipefail
 
 CUDA_VER="${CUDA_VER:-13.0.2}"

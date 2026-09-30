@@ -17,7 +17,7 @@ Na raiz do **KreuzbergParser** (Python 3.12):
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-./scripts/update_deps.sh --sync --cuda cu130
+./scripts/update_deps.sh --sync --cuda cu132
 .venv/bin/python main.py
 ```
 
@@ -38,7 +38,7 @@ Quando executar `.venv/bin/python main.py`, a interface gráfica abrirá automat
    - ⚡ **Express (Rápido) - Tesseract 200 DPI** — teste rápido
    - 💻 **CPU - Tesseract 300 DPI + tabelas** — documentos complexos sem GPU
    - 🚀 **GPU - RapidOCR CUDA** — se o Status GPU indicar NVIDIA
-4. **VLM fallback**: Desligado, Qwen2.5-VL (Ollama) ou Nemotron Parse (vLLM)
+4. **VLM fallback**: Desligado, Qwen2.5-VL (Ollama), Qwen3-VL (Ollama, padrão), Nemotron Parse (vLLM) ou PaddleOCR-VL (vLLM)
 5. **Processar**: Clique em "🚀 PROCESSAR PDF"
 6. **Resultado**: `{stem}_ocr_{modo}_{modelo}.md` (ex. `_ocr_gpu_nemotron.md`)
 
@@ -99,7 +99,7 @@ brew install tesseract tesseract-lang
 2. PyTorch com CUDA no `.venv`?
    ```bash
    .venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-   ./scripts/update_deps.sh --sync --cuda cu130
+   ./scripts/update_deps.sh --sync --cuda cu132
    ```
 
 > O modo GPU usa RapidOCR (onnxruntime-gpu) + TrOCR via PyTorch. O CUDA Toolkit (`nvcc`) **não** é necessário
@@ -170,7 +170,7 @@ Agora que o sistema está funcionando:
 ## 📚 Documentação Completa
 
 - **README.md** - Documentação completa do sistema
-- **GPU_SETUP.md** - GPU cu130, Ollama, Nemotron
+- **GPU_SETUP.md** - GPU cu132, Ollama, Nemotron
 - **docs/DEPENDENCY_CONFLICTS.md** - o que não misturar
 - **config.py** - Modos, VLM, templates
 

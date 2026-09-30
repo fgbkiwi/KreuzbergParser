@@ -17,6 +17,13 @@
 #   .\build_kreuzberg_parser_pynsist.ps1 -NoBump         # build com versao atual (sem bump)
 #   .\build_kreuzberg_parser_pynsist.ps1 -NoBump -NoPublish
 #   .\build_kreuzberg_parser_pynsist.ps1 minor -NoPublish
+#   .\build_kreuzberg_parser_pynsist.ps1 ... -AllowDirty   # permite working tree sujo
+#
+# Ao publicar, o script exige working tree limpo e em dia com o remoto,
+# faz commit do bump (main.py, pyproject.toml, .cfg), cria a tag vX.Y.Z,
+# faz push de branch + tag e cria a Release (ou anexa o .exe se a Release
+# da mesma versao ja existir - p.ex. criada pelo build do Linux).
+# Para anexar o .exe a uma versao ja publicada: -NoBump (a partir do commit da tag).
 # ============================================================
 
 param(
@@ -27,7 +34,10 @@ param(
     [switch]$NoPublish,
 
     # Reutiliza APP_VERSION atual sem incrementar
-    [switch]$NoBump
+    [switch]$NoBump,
+
+    # Permite publicar com alteracoes nao commitadas (o .exe nao correspondera a tag)
+    [switch]$AllowDirty
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +49,14 @@ $CONFIG_FILE  = "kreuzberg_parser_pynsist.cfg"
 $BUMP_SCRIPT  = "bump_version.py"
 $PYTHON_EXE   = ".venv\Scripts\python.exe"
 $GITHUB_REPO  = "fgbkiwi/KreuzbergParser"
+$VERSION_FILES = @("main.py", "pyproject.toml", "kreuzberg_parser_pynsist.cfg")
+
+# Roda git sem que stderr vire erro terminante sob ErrorActionPreference=Stop.
+function Invoke-Git {
+    $ErrorActionPreference = "Continue"
+    $out = & git @args 2>$null
+    return $out
+}
 
 if (-not (Test-Path $CONFIG_FILE)) {
     Write-Error "Config Pynsist nao encontrado: '$CONFIG_FILE'."
@@ -83,6 +101,54 @@ if (-not $NoPublish) {
         Write-Error "GitHub CLI nao autenticado. Rode 'gh auth login' ou use -NoPublish."
         exit 1
     }
+
+    # --- Git preflight (antes do build, para nao desperdicar um build longo) ---
+    Invoke-Git fetch --quiet --tags origin | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "git fetch falhou."
+        exit 1
+    }
+    if (-not $AllowDirty) {
+        $dirty = Invoke-Git status --porcelain
+        if ($dirty) {
+            $dirty | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+            Write-Host "Se so os arquivos de versao aparecem, um build anterior deixou o bump para tras:" -ForegroundColor Gray
+            Write-Host "  git checkout -- $($VERSION_FILES -join ' ')" -ForegroundColor Gray
+            Write-Error "Working tree com alteracoes nao commitadas. Faca commit antes, ou use -AllowDirty."
+            exit 1
+        }
+    }
+    # HEAD destacado = build a partir de "git checkout vX.Y.Z"
+    Invoke-Git symbolic-ref -q HEAD | Out-Null
+    $DETACHED = ($LASTEXITCODE -ne 0)
+    if ($DETACHED) {
+        if (-not $NoBump) {
+            Write-Error "Nao da para fazer bump com HEAD destacado; faca checkout de um branch (ou use -NoBump)."
+            exit 1
+        }
+    } else {
+        Invoke-Git rev-parse --abbrev-ref --symbolic-full-name '@{u}' | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "O branch atual nao tem upstream; faca push antes (git push -u origin HEAD)."
+            exit 1
+        }
+        $behind = Invoke-Git rev-list --count 'HEAD..@{u}'
+        if ([int]$behind -ne 0) {
+            Write-Error "O branch local esta atras do remoto. Rode 'git pull' antes."
+            exit 1
+        }
+    }
+}
+
+# Reverte os arquivos de versao se o script falhar depois do bump e antes do commit.
+# (Todo 'Write-Error' aqui e terminante por causa do ErrorActionPreference=Stop.)
+$script:BumpPending = $false
+trap {
+    if ($script:BumpPending) {
+        Write-Host "Build falhou - revertendo bump em: $($VERSION_FILES -join ', ')" -ForegroundColor Yellow
+        Invoke-Git checkout HEAD @VERSION_FILES | Out-Null
+    }
+    break
 }
 
 # --- Versao (fonte unica: APP_VERSION em main.py) ------------------------
@@ -111,10 +177,28 @@ if ($NoBump) {
     }
     $VERSION = $VERSION.ToString().Trim()
     Write-Host "Nova versao: $VERSION" -ForegroundColor Green
+    if (-not $NoPublish -and -not $AllowDirty) {
+        $script:BumpPending = $true
+    }
 }
 
 $INSTALLER = Join-Path $ScriptDir "build\nsis\${INSTALLER_STEM}_${VERSION}.exe"
 $TAG = "v$VERSION"
+
+if (-not $NoPublish) {
+    $tagCommit = Invoke-Git rev-list -n 1 $TAG
+    if ($LASTEXITCODE -eq 0 -and $tagCommit) {
+        if (-not $NoBump) {
+            Write-Error "A tag $TAG ja existe; nao da para publicar um bump para uma versao existente."
+            exit 1
+        }
+        $headCommit = Invoke-Git rev-parse HEAD
+        if ($tagCommit -ne $headCommit) {
+            Write-Error "A tag $TAG existe mas aponta para outro commit que nao o HEAD. Faca 'git checkout $TAG' ou publique uma nova versao (sem -NoBump)."
+            exit 1
+        }
+    }
+}
 
 # --- Garantir pynsist instalado -----------------------------------------
 Write-Host "`n[1/4] Instalando pynsist..." -ForegroundColor Cyan
@@ -540,14 +624,37 @@ Write-Host "Instalador: $INSTALLER"
 if ($NoPublish) {
     Write-Host "`nPublicacao no GitHub omitida (-NoPublish)." -ForegroundColor Yellow
     Write-Host "Para publicar depois:" -ForegroundColor Gray
+    Write-Host "  gh release upload $TAG `"$INSTALLER`" --repo $GITHUB_REPO --clobber   # Release ja existe" -ForegroundColor Gray
     Write-Host "  gh release create $TAG `"$INSTALLER`" --repo $GITHUB_REPO --title `"$APP_NAME $VERSION`" --latest" -ForegroundColor Gray
 } else {
-    Write-Host "`n[4/4] Publicando Release $TAG no GitHub..." -ForegroundColor Cyan
+    Write-Host "`n[4/4] Commit/tag/push e publicacao de $TAG no GitHub..." -ForegroundColor Cyan
 
-    $existing = gh release view $TAG --repo $GITHUB_REPO 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Error "A Release $TAG ja existe em $GITHUB_REPO. Abortando publicacao (o instalador local permanece em $INSTALLER)."
+    if (-not $NoBump) {
+        git add @VERSION_FILES
+        if ($LASTEXITCODE -ne 0) { Write-Error "git add falhou."; exit 1 }
+        git commit --quiet -m "Release $TAG" @VERSION_FILES
+        if ($LASTEXITCODE -ne 0) { Write-Error "git commit falhou."; exit 1 }
+        $script:BumpPending = $false
+        Write-Host "  Commit do bump criado: $(Invoke-Git rev-parse --short HEAD)" -ForegroundColor Gray
+    }
+    Invoke-Git rev-parse -q --verify "refs/tags/$TAG" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        git tag -a $TAG -m "Release $TAG"
+        if ($LASTEXITCODE -ne 0) { Write-Error "git tag falhou."; exit 1 }
+        Write-Host "  Tag $TAG criada em $(Invoke-Git rev-parse --short HEAD)" -ForegroundColor Gray
+    }
+    $pushRefs = @("refs/tags/$TAG")
+    if (-not $DETACHED) { $pushRefs = @("HEAD") + $pushRefs }
+    $ErrorActionPreference = "Continue"   # git push escreve progresso em stderr
+    git push --atomic origin @pushRefs
+    $pushExit = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+    if ($pushExit -ne 0) {
+        Write-Error "git push falhou. O instalador local esta em: $INSTALLER"
         exit 1
+    }
+    if ($AllowDirty -and (Invoke-Git status --porcelain)) {
+        Write-Host "Aviso: build feito com -AllowDirty; o .exe inclui alteracoes que nao estao em $TAG." -ForegroundColor Yellow
     }
 
     $notes = @"
@@ -555,26 +662,34 @@ Instalador Windows do $APP_NAME $VERSION.
 
 Baixe o arquivo .exe e execute o assistente de instalacao.
 
-Requisitos: Windows 64-bit, driver NVIDIA atualizado para modos GPU (PyTorch cu130).
+Requisitos: Windows 64-bit, driver NVIDIA atualizado para modos GPU (PyTorch cu132).
 Poppler e tessdata sao baixados na primeira execucao.
 "@
 
-    gh release create $TAG $INSTALLER `
-        --repo $GITHUB_REPO `
-        --title "$APP_NAME $VERSION" `
-        --notes $notes `
-        --latest
+    $ErrorActionPreference = "Continue"
+    gh release view $TAG --repo $GITHUB_REPO 2>$null | Out-Null
+    $releaseExists = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = "Stop"
+
+    if ($releaseExists) {
+        Write-Host "  Release $TAG ja existe - anexando o .exe (sem recriar)." -ForegroundColor Gray
+        gh release upload $TAG $INSTALLER --repo $GITHUB_REPO --clobber
+    } else {
+        gh release create $TAG $INSTALLER `
+            --repo $GITHUB_REPO `
+            --title "$APP_NAME $VERSION" `
+            --notes $notes `
+            --verify-tag `
+            --latest
+    }
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Falha ao criar a Release $TAG. O instalador local esta em: $INSTALLER"
+        Write-Error "Falha ao publicar na Release $TAG. O instalador local esta em: $INSTALLER"
         exit 1
     }
 
     $releaseUrl = "https://github.com/$GITHUB_REPO/releases/tag/$TAG"
     Write-Host "Release publicada: $releaseUrl" -ForegroundColor Green
-    if (-not $NoBump) {
-        Write-Host "Lembre-se de fazer commit/push do bump de versao ($VERSION) se ainda nao estiver no remoto." -ForegroundColor Yellow
-    }
 }
 
 Write-Host "`nBuild concluido!" -ForegroundColor Green

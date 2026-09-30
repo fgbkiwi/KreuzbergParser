@@ -10,11 +10,12 @@
 #   ./scripts/update_deps.sh --check         # resolve in temp, compare, do not write
 #   ./scripts/update_deps.sh --sync          # also install into .venv
 #   ./scripts/update_deps.sh --no-upgrade    # re-resolve without upgrading
-#   ./scripts/update_deps.sh --cuda cu128    # PyTorch CUDA/CPU index
+#   ./scripts/update_deps.sh --cuda cu130    # PyTorch CUDA/CPU index
 #   ./scripts/update_deps.sh --python 3.12   # target Python version
 #
-# Default CUDA index is cu130 (PyTorch 2.13+): required for Blackwell GPUs
-# (RTX 50-series / sm_120). Older tags like cu124/cu126 do not include sm_120.
+# Default CUDA index is cu132: PyTorch drops cu130 after 2.14 and cu132 is the
+# new stable default. Blackwell GPUs (RTX 50-series / sm_120) need cu128+;
+# older tags like cu124/cu126 do not include sm_120.
 # See docs/DEPENDENCY_CONFLICTS.md for conflict rules.
 set -euo pipefail
 
@@ -24,9 +25,10 @@ cd "$ROOT"
 IN_FILE="${ROOT}/requirements.in"
 OUT_FILE="${ROOT}/requirements.txt"
 TORCH_PKGS=("torch" "torchvision")
+TORCHVISION_FLOOR="0.26"
 
 # Newest stable CUDA build with Blackwell (sm_120) support.
-CUDA_TAG="cu130"
+CUDA_TAG="cu132"
 DO_UPGRADE=1
 DO_SYNC=0
 DRY_RUN=0
@@ -57,9 +59,9 @@ require_uv() {
 pytorch_index_url() {
   case "$1" in
     cpu) echo "https://download.pytorch.org/whl/cpu" ;;
-    # cu128+ required for Blackwell (sm_120). cu130 ships the newest torch.
-    cu118|cu121|cu124|cu126|cu128|cu130) echo "https://download.pytorch.org/whl/$1" ;;
-    *) die "unsupported CUDA tag '$1' (use cu118, cu121, cu124, cu126, cu128, cu130, or cpu)" ;;
+    # cu128+ required for Blackwell (sm_120). cu130 ends with torch 2.14.
+    cu118|cu121|cu124|cu126|cu128|cu130|cu132) echo "https://download.pytorch.org/whl/$1" ;;
+    *) die "unsupported CUDA tag '$1' (use cu118, cu121, cu124, cu126, cu128, cu130, cu132, or cpu)" ;;
   esac
 }
 
@@ -459,12 +461,21 @@ done < "$IN_FILE"
 if [[ ! -s "$TORCH_IN" ]]; then
   printf '%s\n' "${TORCH_PKGS[@]}" > "$TORCH_IN"
 fi
+# The PyTorch index also mirrors ancient unpinned torchvision wheels (0.1.x).
+# When a torch patch ships before its torchvision, the resolver would pair the
+# newest torch with one of those; the floor forces a matched pair instead.
+echo "torchvision>=${TORCHVISION_FLOOR}" >> "$TORCH_IN"
 
 # Keep transformers from pinning PyPI torch during the base solve.
+# RapidOCR depends on opencv-python; requirements.in supplies the single cv2
+# provider (opencv-python-headless), so the GUI/contrib wheels are excluded.
 cat > "$EXCLUDE_TORCH" <<'EOF'
 torch
 torchvision
 torchaudio
+opencv-python
+opencv-contrib-python
+opencv-contrib-python-headless
 EOF
 
 PYTHON_ARGS=()
@@ -611,6 +622,16 @@ if [[ "$DO_SYNC" -eq 1 ]]; then
   SYNC_ARGS+=(--extra-index-url "$INDEX_URL" --index-strategy unsafe-best-match)
   uv "${SYNC_ARGS[@]}"
   echo "==> Environment synced"
+
+  # Removing a second OpenCV wheel deletes files shared with the one that
+  # stays, leaving an empty namespace cv2/. Reinstall the headless provider.
+  if [[ -x "${ROOT}/.venv/bin/python" ]] && \
+     ! "${ROOT}/.venv/bin/python" -c "import cv2; cv2.imread" >/dev/null 2>&1; then
+    echo "==> Repairing cv2 (reinstalling opencv-python-headless)"
+    CV2_PIN="$(grep -iE '^opencv-python-headless==' "$OUT_FILE" || echo opencv-python-headless)"
+    uv pip install --quiet --python "${ROOT}/.venv/bin/python" \
+      --reinstall --no-deps "$CV2_PIN"
+  fi
 
   # PaddleOCR GPU: o sync instala o kreuzberg do PyPI (ONNX Runtime só-CPU).
   # Reinstala por cima o wheel local ort-dynamic, que honra ORT_DYLIB_PATH e

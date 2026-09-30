@@ -3,6 +3,7 @@
 Supports:
 - NVIDIA Nemotron Parse (vLLM local) — task-specific document parser
 - Qwen2.5-VL / Qwen3-VL (Ollama OpenAI endpoint) — free-form prompt
+- PaddleOCR-VL (vLLM local) — task-specific document parser
 - NVIDIA NIM API (optional, sends documents off-machine)
 
 Degrades gracefully: returns None when the backend is down or times out.
@@ -47,6 +48,13 @@ NEMOTRON_PARSE_PROMPT = (
     "</s><s><predict_bbox><predict_classes><output_markdown><predict_no_text_in_pic>"
 )
 
+# PaddleOCR-VL task prompt (vLLM recipe). Others: "Table Recognition:",
+# "Formula Recognition:", "Chart Recognition:", "Seal Recognition:".
+PADDLEOCR_VL_PROMPT = "OCR:"
+
+# One 300 DPI page is ~4300 prompt tokens; Ollama's default context is 4096.
+OLLAMA_NUM_CTX = 16384
+
 
 def parse_page_image(
     png_bytes: bytes,
@@ -63,7 +71,7 @@ def parse_page_image(
         Config = None  # type: ignore
 
     base_url = (base_url or _cfg(Config, "VLM_BASE_URL", "http://127.0.0.1:11434/v1")).rstrip("/")
-    model = model or _cfg(Config, "VLM_MODEL", "qwen2.5vl:7b")
+    model = model or _cfg(Config, "VLM_MODEL", "qwen3-vl:8b-instruct")
     api_key = api_key if api_key is not None else _cfg(Config, "VLM_API_KEY", "")
     if not api_key:
         api_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("VLM_API_KEY") or "ollama"
@@ -83,6 +91,7 @@ def parse_page_image(
     parse_mode = _is_nemotron_parse(model)
     b64 = base64.b64encode(png_bytes).decode("ascii")
     data_url = f"data:image/png;base64,{b64}"
+    url = f"{base_url}/chat/completions"
 
     if parse_mode:
         payload = {
@@ -96,6 +105,47 @@ def parse_page_image(
                         {"type": "text", "text": NEMOTRON_PARSE_PROMPT},
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
+                },
+            ],
+        }
+    elif _is_paddleocr_vl(model):
+        # Task prompt only, image first; the model ignores free-form instructions.
+        payload = {
+            "model": model,
+            "temperature": 0,
+            "max_tokens": 4096,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {"type": "text", "text": PADDLEOCR_VL_PROMPT},
+                    ],
+                },
+            ],
+        }
+    elif _is_ollama(base_url):
+        # Ollama's OpenAI endpoint cannot set the context size and rejects the
+        # page with HTTP 400; the native API takes num_ctx per request.
+        url = f"{base_url[: -len('/v1')]}/api/chat"
+        payload = {
+            "model": model,
+            "stream": False,
+            # Thinking models can spend the whole num_predict budget reasoning
+            # and return empty content. qwen3-vl:8b ignores this flag, which is
+            # why the preset uses the -instruct tag.
+            "think": False,
+            "options": {
+                "temperature": 0,
+                "num_ctx": OLLAMA_NUM_CTX,
+                "num_predict": 4096,
+            },
+            "messages": [
+                {"role": "system", "content": LLAMAPARSE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": "Transcreva esta página.",
+                    "images": [b64],
                 },
             ],
         }
@@ -116,7 +166,6 @@ def parse_page_image(
             ],
         }
 
-    url = f"{base_url}/chat/completions"
     body = json.dumps(payload).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -190,7 +239,7 @@ def _mark_unreachable(base_url: str, model: Optional[str], exc: BaseException) -
         "fallback VLM na interface.",
         base_url,
         exc,
-        model or "qwen2.5vl:7b",
+        model or "qwen3-vl:8b-instruct",
     )
 
 
@@ -212,11 +261,21 @@ def _is_nemotron_parse(model: str) -> bool:
     return "nemotron-parse" in low or "nemotron_parse" in low or "nemoretriever-parse" in low
 
 
+def _is_ollama(base_url: str) -> bool:
+    return ":11434" in base_url and base_url.endswith("/v1")
+
+
+def _is_paddleocr_vl(model: str) -> bool:
+    low = (model or "").lower()
+    return "paddleocr-vl" in low or "paddleocr_vl" in low
+
+
 def _message_text(data: dict) -> str:
     choices = data.get("choices") or []
-    if not choices:
+    if not choices and not data.get("message"):
         return (data.get("text") or data.get("output") or "") if isinstance(data, dict) else ""
-    message = choices[0].get("message") or {}
+    # Ollama's native /api/chat returns the message at the top level.
+    message = choices[0].get("message") or {} if choices else data["message"]
     content = message.get("content")
     if isinstance(content, str):
         return content

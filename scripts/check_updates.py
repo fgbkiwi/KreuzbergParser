@@ -59,7 +59,7 @@ def should_run_check(marker: Path = DEFAULT_MARKER, interval_days: float = DEFAU
 def run_dependency_check(
     *,
     timeout_s: float = 600.0,
-    cuda_tag: str = "cu130",
+    cuda_tag: str = "cu132",
 ) -> subprocess.CompletedProcess[str]:
     """Run update_deps.sh --check. Does not write requirements.txt."""
     if not UPDATE_SCRIPT.is_file():
@@ -150,7 +150,7 @@ def maybe_check_dependency_updates(
     interval_days: float = DEFAULT_DAYS,
     force: bool = False,
     marker: Path = DEFAULT_MARKER,
-    cuda_tag: str = "cu130",
+    cuda_tag: str = "cu132",
     timeout_s: float = 600.0,
     background: bool = False,
 ) -> Optional[int]:
@@ -211,8 +211,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument(
         "--cuda",
-        default="cu130",
-        help="PyTorch CUDA tag passed to update_deps.sh (default cu130)",
+        default="cu132",
+        help="PyTorch CUDA tag passed to update_deps.sh (default cu132)",
     )
     parser.add_argument(
         "--marker",

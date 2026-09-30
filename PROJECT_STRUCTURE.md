@@ -17,7 +17,7 @@ KreuzbergParser/
 │
 ├── README.md
 ├── QUICKSTART.md
-├── GPU_SETUP.md                 # RTX 5060 Ti / cu130 / Nemotron / Ollama
+├── GPU_SETUP.md                 # RTX 5060 Ti / cu132 / Nemotron / Ollama
 ├── kreuzberg.toml               # Perfil nativo PaddleOCR GPU (CUDA)
 ├── docs/DEPENDENCY_CONFLICTS.md
 │
@@ -267,7 +267,7 @@ python-dotenv==1.0.0      # Configuração .env
 - **DPI**: 300 (formulários)
 - **Handwriting**: TrOCR opcional
 - **VLM**: Qwen (Ollama) ou Nemotron Parse (vLLM em `.venv-nemotron`)
-- **Requisitos**: NVIDIA + PyTorch cu130 (RTX 50)
+- **Requisitos**: NVIDIA + PyTorch cu132 (RTX 50)
 
 ---
 
