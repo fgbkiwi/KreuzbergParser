@@ -73,9 +73,7 @@ def get_rapid_ocr_engine(*, rec_batch_num: int = 8):
     with _engine_lock:
         if _engine is not None and _engine_rec_batch == rec_batch_num:
             return _engine
-        from rapidocr import RapidOCR
-        from rapidocr.utils.typings import LangDet, LangRec, ModelType, OCRVersion
-
+        from utils.opencv_runtime import ensure_cv2
         from utils.ort_runtime import prepare_paddle_gpu_runtime
 
         if not prepare_paddle_gpu_runtime():
@@ -83,6 +81,12 @@ def get_rapid_ocr_engine(*, rec_batch_num: int = 8):
                 "onnxruntime-gpu CUDAExecutionProvider is not available. "
                 "Install onnxruntime-gpu>=1.27 (CUDA 13) — see GPU_SETUP.md."
             )
+
+        # RapidOCR's main.py does `import cv2` at module load.
+        ensure_cv2()
+
+        from rapidocr import RapidOCR
+        from rapidocr.utils.typings import LangDet, LangRec, ModelType, OCRVersion
 
         model_dir = _model_root_dir()
         params = {

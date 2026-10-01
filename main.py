@@ -17,16 +17,29 @@ GITHUB_REPO = "KreuzbergParser"
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# OpenCV pip loader: force cv2.pyd ahead of cv2/__init__.py (Pynsist pkgs/).
+sys.OpenCV_REPLACE_SYS_PATH_0 = True  # type: ignore[attr-defined]
+
 # Kreuzberg native PaddleOCR GPU: onnxruntime-gpu + ORT_DYLIB_PATH before
 # `import kreuzberg` (see docs.kreuzberg.dev GPU acceleration).
 from utils.ort_runtime import prepare_paddle_gpu_runtime, log_ort_status
 
 prepare_paddle_gpu_runtime()
 
+from utils.opencv_runtime import ensure_cv2
 from utils.logger import setup_logger
 from utils.poppler import ensure_poppler
 from utils.tessdata import ensure_tessdata
 from config import Config
+
+# Load cv2 on the main thread before Flet/RapidOCR worker threads.
+try:
+    ensure_cv2()
+except Exception:
+    logging.getLogger(__name__).exception(
+        "OpenCV indisponível; o modo GPU (RapidOCR) vai falhar."
+    )
+
 from ui.app import run_app
 
 

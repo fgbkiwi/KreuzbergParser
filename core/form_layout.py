@@ -31,11 +31,13 @@ except ImportError:  # pragma: no cover
     Image = None  # type: ignore
 
 try:
-    import cv2
+    from utils.opencv_runtime import ensure_cv2
+
+    cv2 = ensure_cv2()
     import numpy as np
 
     _CV2_AVAILABLE = True
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover - optional; RapidOCR still needs cv2
     cv2 = None
     np = None  # type: ignore
     _CV2_AVAILABLE = False

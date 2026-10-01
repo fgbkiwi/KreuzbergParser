@@ -258,6 +258,10 @@ def main() -> None:
     base_dir = Path(__file__).resolve().parent
     if str(base_dir) not in sys.path:
         sys.path.insert(0, str(base_dir))
+    # Must be set before any `import cv2` (main.py → ui → form_layout / RapidOCR).
+    # Without it the OpenCV wheel re-imports cv2/__init__.py and raises
+    # "recursion is detected during loading of cv2 binary extensions".
+    sys.OpenCV_REPLACE_SYS_PATH_0 = True  # type: ignore[attr-defined]
     _suppress_console_window()
     _isolate_from_user_site()
     _add_dll_directories(base_dir)
@@ -313,6 +317,21 @@ def main() -> None:
             close_splash = None
 
     try:
+        for path in (base_dir, base_dir.parent):
+            path_str = str(path)
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+        try:
+            from utils.opencv_runtime import ensure_cv2
+
+            ensure_cv2()
+        except Exception as exc:
+            try:
+                from utils.early_splash import splash_debug
+
+                splash_debug("OpenCV preload failed: %s", exc)
+            except Exception:
+                pass
         app_main = _resolve_app_main(base_dir)
         app_main()
     except Exception:
