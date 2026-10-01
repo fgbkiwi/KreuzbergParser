@@ -329,10 +329,6 @@ $extraItems = @(
     "anyio",
     "sniffio",
     "h11",
-    "pydantic",
-    "pydantic_core",
-    "annotated_types",
-    "typing_inspection",
     "msgpack",
     "flet_desktop",
     "rich",
@@ -357,7 +353,6 @@ Get-ChildItem -Path $venvSp -Directory -Filter "*.dist-info" | ForEach-Object {
         "pillow" = "PIL"
         "python-dotenv" = "dotenv"
         "pyyaml" = "yaml"
-        "scikit-image" = "skimage"
         "opencv-python-headless" = "cv2"
         "flet-desktop" = "flet_desktop"
     }
@@ -396,7 +391,7 @@ foreach ($cudaDll in @("nvidia\cudnn\bin\cudnn64_9.dll", "nvidia\cu13\bin\x86_64
 Write-Host "  Verificacao DLLs CUDA/cuDNN OK" -ForegroundColor Gray
 
 # Se o mapeamento files= aninhar *.libs\*.libs, desfaz.
-foreach ($libsName in @("numpy.libs", "scipy.libs", "shapely.libs", "pandas.libs")) {
+foreach ($libsName in @("numpy.libs", "shapely.libs")) {
     $outer = Join-Path $pkgsOut $libsName
     $inner = Join-Path $outer $libsName
     if (Test-Path $inner) {

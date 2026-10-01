@@ -132,6 +132,45 @@ function Remove-ForbiddenPackages {
     uv pip uninstall @forbidden --python $PythonExe 2>$null | Out-Null
 }
 
+function Get-PackageKey([string]$Name) {
+    return $Name.ToLower().Replace("_", "-").Replace(".", "-")
+}
+
+function Remove-OrphanPackages {
+    # `uv pip install` nunca remove pacotes; deps de stacks antigos (Paddle,
+    # modelscope, scikit-image...) ficavam no venv sem upgrade e entravam no build.
+    Write-Step "Removing packages not required by requirements.in"
+    $roots = @(Get-Content $InFile | ForEach-Object {
+        if ($_ -match '^\s*([A-Za-z0-9][A-Za-z0-9._-]*)') { $Matches[1] }
+    })
+    $frozen = @(uv pip freeze --python $PythonExe)
+    # `uv pip tree` nao segue extras (onnxruntime-gpu[cuda,cudnn] -> nvidia-*).
+    $roots += $frozen | Where-Object { $_ -like "nvidia-*" } | ForEach-Object { ($_ -split "==| @ ")[0] }
+    # Ferramenta de build (instalada por build_kreuzberg_parser_pynsist.ps1).
+    $roots += "pynsist"
+
+    $installed = @($frozen | ForEach-Object { Get-PackageKey (($_ -split "==| @ ")[0]) })
+    $pkgArgs = @($roots | Where-Object { (Get-PackageKey $_) -in $installed } | ForEach-Object { "--package"; $_ })
+    $needed = @(uv pip tree --python $PythonExe @pkgArgs | ForEach-Object {
+        if ($_ -match '([A-Za-z0-9][A-Za-z0-9._-]*) v\d') { Get-PackageKey $Matches[1] }
+    })
+    if ($LASTEXITCODE -ne 0 -or $needed.Count -eq 0) {
+        Die "failed to compute the dependency tree of requirements.in"
+    }
+
+    $keep = @("pip", "setuptools", "wheel", "uv")
+    $orphans = @($installed | Where-Object { $_ -notin $needed -and $_ -notin $keep } | Sort-Object -Unique)
+    if ($orphans.Count -eq 0) {
+        Write-Host "  No orphan packages" -ForegroundColor Gray
+        return
+    }
+    Write-Host ("  Uninstalling {0}: {1}" -f $orphans.Count, ($orphans -join " ")) -ForegroundColor Yellow
+    uv pip uninstall @orphans --python $PythonExe
+    if ($LASTEXITCODE -ne 0) {
+        Die "failed to uninstall orphan packages"
+    }
+}
+
 # --- main ----------------------------------------------------------------
 Require-Uv
 
@@ -197,6 +236,8 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     Die "opencv-python-headless installed but import cv2 is unusable"
 }
+
+Remove-OrphanPackages
 
 $rc = Invoke-ConflictCheck
 if ($rc -ne 0) {

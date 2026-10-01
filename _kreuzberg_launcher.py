@@ -54,8 +54,6 @@ def _add_dll_directories(base_dir: Path) -> None:
         base_dir,
         base_dir.parent,
         base_dir / "numpy.libs",
-        base_dir / "scipy.libs",
-        base_dir / "pandas.libs",
         base_dir / "shapely.libs",
         base_dir / "cv2",
         base_dir / "onnxruntime" / "capi",
