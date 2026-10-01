@@ -226,7 +226,8 @@ class OCRApp:
         self._queue_total = 0
         self._log_lines: list[str] = []
         self._log_lock = threading.Lock()
-        self._pending_progress: tuple[float, str] | None = None
+        self._pending_progress: tuple[float | None, str] | None = None
+        self._run_vlm_backend: str | None = None
         self._pending_stats: str | None = None
         self._last_ui_flush = 0.0
         self._flush_handle: asyncio.TimerHandle | None = None
@@ -827,7 +828,9 @@ class OCRApp:
         )
 
     def _get_run_suffix(self) -> str:
-        backend = self.config.resolve_vlm_backend(self.vlm_dropdown.value)
+        backend = self._run_vlm_backend
+        if backend is None:
+            backend = self.config.resolve_vlm_backend(self.vlm_dropdown.value)
         preset = self.config.vlm_preset(backend)
         return self.config.run_file_suffix(
             self.selected_mode,
@@ -906,13 +909,18 @@ class OCRApp:
         self.process_button.disabled = True
         self.clear_queue_button.disabled = True
         self._refresh_queue_list()
+        # Snapshot Flet control values on the session thread. Reading them
+        # from the worker can deadlock the Windows desktop client.
+        self._run_vlm_backend = self.config.resolve_vlm_backend(
+            self.vlm_dropdown.value
+        )
         self.progress_bar.visible = True
-        self.progress_bar.value = 0
+        self.progress_bar.value = None
         self.progress_text.value = "Iniciando fila de conversão..."
         with self._log_lock:
             self._log_lines.clear()
         self.log_field.value = ""
-        self._pending_progress = (0, self.progress_text.value)
+        self._pending_progress = (None, self.progress_text.value)
         self._pending_stats = None
         self.stats_field.value = "📊 Estatísticas:\n   • Aguardando classificação..."
         self._patch_page()
@@ -935,8 +943,9 @@ class OCRApp:
         ok_count = 0
         fail_count = 0
         batch_start = time.time()
+        engine = None
 
-        vlm_backend = self.config.resolve_vlm_backend(self.vlm_dropdown.value)
+        vlm_backend = self._run_vlm_backend or self.config.resolve_vlm_backend()
         vlm_preset = self.config.vlm_preset(vlm_backend)
         enable_vlm = bool(vlm_preset.get("enabled"))
 
@@ -953,16 +962,18 @@ class OCRApp:
                 else ""
             )
         )
-
-        engine = KreuzbergOCREngine(self.selected_mode, self.config)
-        if engine._paddle_gpu_fallback_text():
-            self.log_message(
-                "⚠️ Kreuzberg nativo recusou CUDA — OCR via PaddleOCR "
-                "oficial na GPU (não é CPU). Detalhes no final do log.",
-                ft.Colors.ORANGE_900,
-            )
+        self.update_progress(None, "Preparando motor OCR...")
+        self._yield_ui()
 
         try:
+            engine = KreuzbergOCREngine(self.selected_mode, self.config)
+            if engine._paddle_gpu_fallback_text():
+                self.log_message(
+                    "⚠️ Kreuzberg nativo recusou CUDA — OCR via PaddleOCR "
+                    "oficial na GPU (não é CPU). Detalhes no final do log.",
+                    ft.Colors.ORANGE_900,
+                )
+
             for index, pdf_path in enumerate(queue):
                 self._queue_index = index + 1
                 name = Path(pdf_path).name
@@ -975,12 +986,11 @@ class OCRApp:
                     index / self._queue_total if self._queue_total else 0,
                     f"{self._queue_label()}: {name} — iniciando...",
                 )
-                self.stats_field.value = (
+                self.update_stats(
                     f"📊 Estatísticas ({self._queue_label()}):\n"
                     f"   • Arquivo: {name}\n"
                     f"   • Aguardando classificação..."
                 )
-                self._patch_page()
 
                 retarget = index == 0
                 try:
@@ -1006,6 +1016,11 @@ class OCRApp:
                     )
                 finally:
                     detach_process_log_file()
+        except Exception as exc:
+            fail_count += 1
+            logger.exception("Conversion queue failed before processing PDFs")
+            self.log_message(f"❌ Falha ao iniciar o motor OCR: {exc}", ft.Colors.RED)
+            self.update_progress(0, "Falha ao iniciar o motor OCR")
         finally:
             batch_time = time.time() - batch_start
             self.log_message(
@@ -1101,6 +1116,7 @@ class OCRApp:
             queue_index / total_pdfs,
             f"{queue_label}: {name} — extraindo e classificando...",
         )
+        self._yield_ui()
         result = engine.process_pdf(
             pdf_path,
             progress_callback=on_page_progress,
@@ -1175,9 +1191,14 @@ class OCRApp:
             self._log_lines.append(message)
         self._schedule_ui_flush()
 
-    def update_progress(self, value: float, text: str):
+    def update_progress(self, value: float | None, text: str):
         self._pending_progress = (value, text)
         self._schedule_ui_flush()
+
+    def _yield_ui(self) -> None:
+        """Flush pending UI patches and release the GIL so Flet can paint."""
+        self._schedule_ui_flush(force=True)
+        time.sleep(0.15)
 
     def update_stats(self, text: str):
         self._pending_stats = text

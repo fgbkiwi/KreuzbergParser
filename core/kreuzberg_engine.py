@@ -1017,6 +1017,9 @@ class KreuzbergOCREngine:
                 "No Windows use o modo GPU (RapidOCR); veja GPU_SETUP.md."
             )
         rec_batch = self._adaptive_rec_batch_num()
+        logger.info(
+            "Carregando RapidOCR (primeiro uso pode baixar os modelos ONNX)..."
+        )
         get_rapid_ocr_engine(rec_batch_num=rec_batch)
         logger.info(
             "RapidOCR GPU pronto (PP-OCRv5 latin + onnxruntime-gpu CUDA, "

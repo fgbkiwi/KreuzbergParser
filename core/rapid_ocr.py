@@ -7,7 +7,9 @@ Used by ProcessingMode.GPU as the Windows-friendly GPU OCR path
 from __future__ import annotations
 
 import logging
+import os
 import threading
+from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -17,6 +19,36 @@ logger = logging.getLogger(__name__)
 _engine = None
 _engine_lock = threading.Lock()
 _engine_rec_batch: Optional[int] = None
+
+
+def _model_root_dir() -> Path:
+    """Writable RapidOCR model cache (never the Program Files package dir).
+
+    RapidOCR defaults to ``<site-packages>/rapidocr/models``. In the Pynsist
+    installer that path is read-only, so the first GPU run hangs or dies
+    while downloading ONNX weights. Keep them next to tessdata/poppler.
+    """
+    override = (os.environ.get("RAPIDOCR_MODEL_DIR") or "").strip()
+    if override:
+        path = Path(override).expanduser()
+    else:
+        try:
+            from config import Config
+
+            path = Path(Config.BASE_DIR) / "rapidocr_models"
+        except Exception:
+            home = (
+                os.environ.get("KREUZBERG_PARSER_HOME")
+                or os.environ.get("KIWI_DOWN_HOME")
+                or ""
+            ).strip()
+            path = (
+                Path(home) / "rapidocr_models"
+                if home
+                else Path.home() / "KiwiDown" / "rapidocr_models"
+            )
+    path.mkdir(parents=True, exist_ok=True)
+    return path.resolve()
 
 
 def _png_to_rgb(png_bytes: bytes) -> np.ndarray:
@@ -52,6 +84,7 @@ def get_rapid_ocr_engine(*, rec_batch_num: int = 8):
                 "Install onnxruntime-gpu>=1.27 (CUDA 13) — see GPU_SETUP.md."
             )
 
+        model_dir = _model_root_dir()
         params = {
             "EngineConfig.onnxruntime.use_cuda": True,
             "EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search": "HEURISTIC",
@@ -61,9 +94,12 @@ def get_rapid_ocr_engine(*, rec_batch_num: int = 8):
             "Rec.rec_batch_num": max(1, int(rec_batch_num)),
             "Det.lang_type": LangDet.EN,
             "Global.log_level": "warning",
+            "Global.model_root_dir": str(model_dir),
         }
         logger.info(
-            "Starting RapidOCR GPU (PP-OCRv5 latin + onnxruntime-gpu CUDA)"
+            "Starting RapidOCR GPU (PP-OCRv5 latin + onnxruntime-gpu CUDA, "
+            "models=%s)",
+            model_dir,
         )
         _engine = RapidOCR(params=params)
         _engine_rec_batch = rec_batch_num
