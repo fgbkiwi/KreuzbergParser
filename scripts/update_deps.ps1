@@ -30,6 +30,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Hardlinks do cache do uv falham em pastas sincronizadas com nuvem (os error 396).
+if (-not $env:UV_LINK_MODE) {
+    $env:UV_LINK_MODE = "copy"
+}
+
 if ($Help) {
     Get-Help $MyInvocation.MyCommand.Path -Full
     exit 0
@@ -184,7 +189,7 @@ if (Test-Path $cv2Dir) {
         Remove-Item -Recurse -Force $cv2Dir
     }
 }
-uv pip install --reinstall "opencv-python-headless" --python $PythonExe
+uv pip install --reinstall "opencv-python-headless>=4.8,<5" --python $PythonExe
 if ($LASTEXITCODE -ne 0) {
     Die "failed to install opencv-python-headless"
 }
