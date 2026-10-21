@@ -219,7 +219,9 @@ class Config:
     # ===== GPU SETTINGS (RTX 5060 Ti 16GB) =====
     # CUDA device index for AccelerationConfig / PaddleOCR (override: CUDA_DEVICE_ID).
     CUDA_DEVICE_ID = int(os.environ.get("CUDA_DEVICE_ID", "0"))
-    MIN_VRAM_GB = 4  # Minimum VRAM for GPU modes
+    MIN_VRAM_GB = 4  # Minimum VRAM for GPU OCR modes
+    # Local VLM (Ollama Qwen / vLLM): 8B VL needs ~8 GB; below this UI hides presets.
+    MIN_VRAM_VLM_GB = float(os.environ.get("MIN_VRAM_VLM_GB", "8"))
     GPU_BATCH_VRAM_GB = 8  # Full page batch when VRAM is at least this
     GPU_HIGH_VRAM_GB = 12  # Use full rec_batch_num (16) at or above this
 
@@ -227,8 +229,13 @@ class Config:
     # Deterministic Tesseract-TSV + geometry templates for TRCT / ficha / recibo / FGTS.
     ENABLE_TEMPLATE_EXTRACTION = True
     TEMPLATE_MIN_FILL_RATIO = 0.45
-    # VLM fallback when a template cannot fill enough fields (local by default).
+    # VLM: form fallback + photograph description when OCR finds no text.
     ENABLE_VLM_FALLBACK = True
+    # When VLM is on and supports free-form caption (Qwen/Ollama), describe
+    # photographs / figures whose classic OCR yields little or no text.
+    ENABLE_IMAGE_DESCRIPTION = True
+    # Alphanumeric OCR chars below this → treat figure/page as “no usable text”.
+    IMAGE_OCR_MIN_CHARS = 40
     # OpenAI-compatible endpoint. Ollama: http://127.0.0.1:11434/v1
     # vLLM Nemotron Parse: http://127.0.0.1:8000/v1
     # vLLM PaddleOCR-VL: http://127.0.0.1:8001/v1
@@ -241,30 +248,35 @@ class Config:
         "off": {
             "label": "Desligado (só templates)",
             "enabled": False,
+            "requires_local_gpu": False,
             "base_url": "",
             "model": "",
         },
         "qwen": {
             "label": "Qwen2.5-VL (Ollama)",
             "enabled": True,
+            "requires_local_gpu": True,
             "base_url": "http://127.0.0.1:11434/v1",
             "model": "qwen2.5vl:7b",
         },
         "qwen3": {
             "label": "Qwen3-VL (Ollama)",
             "enabled": True,
+            "requires_local_gpu": True,
             "base_url": "http://127.0.0.1:11434/v1",
             "model": "qwen3-vl:8b-instruct",
         },
         "nemotron": {
             "label": "Nemotron Parse (vLLM)",
             "enabled": True,
+            "requires_local_gpu": True,
             "base_url": "http://127.0.0.1:8000/v1",
             "model": "nvidia/NVIDIA-Nemotron-Parse-2.0",
         },
         "paddleocr_vl": {
             "label": "PaddleOCR-VL (vLLM)",
             "enabled": True,
+            "requires_local_gpu": True,
             "base_url": "http://127.0.0.1:8001/v1",
             "model": "PaddlePaddle/PaddleOCR-VL-1.6",
         },
@@ -302,6 +314,36 @@ class Config:
         if "qwen3" in model:
             return "qwen3"
         return "qwen"
+
+    @classmethod
+    def vlm_requires_local_gpu(cls, backend: str | None = None) -> bool:
+        key = cls.resolve_vlm_backend(backend)
+        return bool(cls.VLM_PRESETS.get(key, {}).get("requires_local_gpu"))
+
+    @classmethod
+    def vlm_presets_available(cls, *, local_gpu_ok: bool) -> dict:
+        """Presets shown in the UI; GPU-backed ones omitted without enough VRAM."""
+        out = {}
+        for key, preset in cls.VLM_PRESETS.items():
+            if preset.get("requires_local_gpu") and not local_gpu_ok:
+                continue
+            out[key] = preset
+        return out
+
+    @classmethod
+    def resolve_vlm_backend_for_hardware(
+        cls,
+        backend: str | None = None,
+        *,
+        local_gpu_ok: bool,
+    ) -> str:
+        """Like resolve_vlm_backend, but force off when GPU VLM is unavailable."""
+        key = cls.resolve_vlm_backend(backend)
+        if key != "off" and cls.vlm_requires_local_gpu(key) and not local_gpu_ok:
+            return "off"
+        if key not in cls.vlm_presets_available(local_gpu_ok=local_gpu_ok):
+            return "off"
+        return key
 
     @classmethod
     def vlm_preset(cls, backend: str | None = None) -> dict:

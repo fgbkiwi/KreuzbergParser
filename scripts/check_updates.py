@@ -2,7 +2,8 @@
 """Periodic, non-blocking dependency update advisory.
 
 Checks at most every N days (default 7) using logs/.last_dep_check.
-Invokes scripts/update_deps.sh --check (resolve in temp, compare, no write).
+- Windows: ``scripts/check_dep_conflicts.py`` (no bash/WSL).
+- Unix: ``scripts/update_deps.sh --check``.
 Never auto-upgrades. Safe to call from main.py:
 
     from scripts.check_updates import maybe_check_dependency_updates
@@ -30,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MARKER = ROOT / "logs" / ".last_dep_check"
 DEFAULT_DAYS = 7
 UPDATE_SCRIPT = ROOT / "scripts" / "update_deps.sh"
+CONFLICT_CHECKER = ROOT / "scripts" / "check_dep_conflicts.py"
 
 logger = logging.getLogger(__name__)
 
@@ -56,18 +58,40 @@ def should_run_check(marker: Path = DEFAULT_MARKER, interval_days: float = DEFAU
     return (time.time() - last) >= interval_days * 86400
 
 
+def _venv_python() -> str:
+    if sys.platform == "win32":
+        candidate = ROOT / ".venv" / "Scripts" / "python.exe"
+    else:
+        candidate = ROOT / ".venv" / "bin" / "python"
+    if candidate.is_file():
+        return str(candidate)
+    return sys.executable
+
+
 def run_dependency_check(
     *,
     timeout_s: float = 600.0,
 ) -> subprocess.CompletedProcess[str]:
-    """Run update_deps.sh --check. Does not write requirements.txt."""
-    if not UPDATE_SCRIPT.is_file():
-        raise FileNotFoundError(f"missing {UPDATE_SCRIPT}")
-    cmd = [
-        "bash",
-        str(UPDATE_SCRIPT),
-        "--check",
-    ]
+    """Run the platform-appropriate dependency conflict check (read-only).
+
+    Windows: ``python scripts/check_dep_conflicts.py`` (no bash/WSL).
+    Unix: ``bash scripts/update_deps.sh --check``.
+    """
+    kwargs: dict = (
+        {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+        if sys.platform == "win32"
+        else {}
+    )
+    if sys.platform == "win32":
+        if not CONFLICT_CHECKER.is_file():
+            raise FileNotFoundError(f"missing {CONFLICT_CHECKER}")
+        py = _venv_python()
+        cmd = [py, str(CONFLICT_CHECKER), py]
+    else:
+        if not UPDATE_SCRIPT.is_file():
+            raise FileNotFoundError(f"missing {UPDATE_SCRIPT}")
+        cmd = ["bash", str(UPDATE_SCRIPT), "--check"]
+
     return subprocess.run(
         cmd,
         cwd=str(ROOT),
@@ -76,11 +100,7 @@ def run_dependency_check(
         timeout=timeout_s,
         env=os.environ.copy(),
         check=False,
-        **(
-            {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
-            if sys.platform == "win32"
-            else {}
-        ),
+        **kwargs,
     )
 
 
@@ -131,9 +151,15 @@ def _run_check_body(
             "./scripts/update_deps.sh (ver docs/DEPENDENCY_CONFLICTS.md)."
         )
     elif rc == 1:
+        hint = (
+            ".\\scripts\\update_deps.ps1 -Check"
+            if sys.platform == "win32"
+            else "./scripts/update_deps.sh --check"
+        )
         log.warning(
             "Dependências: conflitos detectados. "
-            "Veja docs/DEPENDENCY_CONFLICTS.md e ./scripts/update_deps.sh --check."
+            "Veja docs/DEPENDENCY_CONFLICTS.md e %s.",
+            hint,
         )
     else:
         log.warning("Checagem de deps terminou com código %s.", rc)

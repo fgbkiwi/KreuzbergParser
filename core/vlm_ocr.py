@@ -43,6 +43,21 @@ ex.: `[signature: NOME]`, `[QR Code]`.
 - Responda somente com o markdown/HTML da página, sem prefácio.
 """
 
+IMAGE_DESCRIBE_SYSTEM_PROMPT = """\
+Você descreve fotografias e imagens embutidas em processos judiciais \
+brasileiros. Seja factual e objetivo.
+
+Regras:
+- Descreva o que a imagem mostra: ambiente, objetos, estado de conservação, \
+condições de higiene, pessoas (sem inventar nomes ou identidades), ações.
+- Se houver texto legível na imagem (legendas, placas, rótulos), transcreva-o.
+- Não invente detalhes que não estejam visíveis.
+- Responda em português brasileiro, em markdown curto (1–3 parágrafos), \
+sem prefácio nem conclusões jurídicas.
+"""
+
+IMAGE_DESCRIPTION_HEADING = "### Descrição da imagem"
+
 # Official Nemotron Parse 2.0 task prompt (HF model card).
 NEMOTRON_PARSE_PROMPT = (
     "</s><s><predict_bbox><predict_classes><output_markdown><predict_no_text_in_pic>"
@@ -54,6 +69,8 @@ PADDLEOCR_VL_PROMPT = "OCR:"
 
 # One 300 DPI page is ~4300 prompt tokens; Ollama's default context is 4096.
 OLLAMA_NUM_CTX = 16384
+# Caption replies are short; keep generation budget modest.
+OLLAMA_DESCRIBE_NUM_PREDICT = 1024
 
 
 def parse_page_image(
@@ -197,13 +214,150 @@ def parse_page_image(
     return text.strip() or None
 
 
+def supports_image_description(
+    *,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+) -> bool:
+    """True when the configured VLM can free-form caption photos (Qwen/Ollama)."""
+    try:
+        from config import Config
+    except Exception:
+        Config = None  # type: ignore
+    base_url = (base_url or _cfg(Config, "VLM_BASE_URL", "http://127.0.0.1:11434/v1")).rstrip("/")
+    model = model or _cfg(Config, "VLM_MODEL", "qwen3-vl:8b-instruct")
+    if _is_nemotron_parse(model) or _is_paddleocr_vl(model):
+        return False
+    # Free-form caption: Ollama Qwen path, or any OpenAI-compatible non-parse model.
+    return bool(model) and (_is_ollama(base_url) or "qwen" in (model or "").lower())
+
+
+def format_image_description_block(description: str) -> str:
+    """Markdown block inserted into page text for a described figure/page."""
+    body = (description or "").strip()
+    if not body:
+        return ""
+    if body.startswith(IMAGE_DESCRIPTION_HEADING):
+        return body
+    return f"{IMAGE_DESCRIPTION_HEADING}\n{body}"
+
+
+def describe_image(
+    png_bytes: bytes,
+    *,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    timeout_s: Optional[float] = None,
+) -> Optional[str]:
+    """Caption a photograph / figure with no usable OCR text. Qwen/Ollama only."""
+    try:
+        from config import Config
+    except Exception:
+        Config = None  # type: ignore
+
+    base_url = (base_url or _cfg(Config, "VLM_BASE_URL", "http://127.0.0.1:11434/v1")).rstrip("/")
+    model = model or _cfg(Config, "VLM_MODEL", "qwen3-vl:8b-instruct")
+    api_key = api_key if api_key is not None else _cfg(Config, "VLM_API_KEY", "")
+    if not api_key:
+        api_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("VLM_API_KEY") or "ollama"
+    timeout_s = float(timeout_s if timeout_s is not None else _cfg(Config, "VLM_TIMEOUT_S", 90))
+
+    if not png_bytes:
+        return None
+    if not supports_image_description(base_url=base_url, model=model):
+        logger.debug(
+            "describe_image ignorado: modelo %s não suporta caption livre",
+            model,
+        )
+        return None
+
+    if base_url in _unreachable:
+        logger.debug(
+            "VLM ignorado: %s inacessível nesta execução (%s)",
+            base_url,
+            _unreachable[base_url],
+        )
+        return None
+
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    data_url = f"data:image/png;base64,{b64}"
+    url = f"{base_url}/chat/completions"
+
+    if _is_ollama(base_url):
+        url = f"{base_url[: -len('/v1')]}/api/chat"
+        payload = {
+            "model": model,
+            "stream": False,
+            "think": False,
+            "options": {
+                "temperature": 0,
+                "num_ctx": OLLAMA_NUM_CTX,
+                "num_predict": OLLAMA_DESCRIBE_NUM_PREDICT,
+            },
+            "messages": [
+                {"role": "system", "content": IMAGE_DESCRIBE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": "Descreva esta imagem.",
+                    "images": [b64],
+                },
+            ],
+        }
+    else:
+        payload = {
+            "model": model,
+            "temperature": 0,
+            "max_tokens": OLLAMA_DESCRIBE_NUM_PREDICT,
+            "messages": [
+                {"role": "system", "content": IMAGE_DESCRIBE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Descreva esta imagem."},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+        }
+
+    body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:300]
+        logger.warning("VLM describe HTTP %s (%s): %s", exc.code, url, detail)
+        return None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        _mark_unreachable(base_url, model, exc)
+        return None
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("VLM describe returned non-JSON payload")
+        return None
+
+    text = _message_text(data)
+    return (text or "").strip() or None
+
+
 def vlm_available(
     *,
     base_url: Optional[str] = None,
     model: Optional[str] = None,
-    timeout_s: float = 2.0,
+    timeout_s: float = 8.0,
 ) -> bool:
-    """Cheap health check against the OpenAI-compatible `/models` endpoint."""
+    """Cheap health check against the OpenAI-compatible `/models` endpoint.
+
+    Default timeout is generous: cold Ollama startups often exceed 2s.
+    """
     try:
         from config import Config
     except Exception:
@@ -233,10 +387,11 @@ def _mark_unreachable(base_url: str, model: Optional[str], exc: BaseException) -
         return
     _unreachable[base_url] = str(exc)
     logger.warning(
-        "VLM indisponível em %s (%s). O fallback VLM fica desativado nesta "
-        "execução; a extração segue por template + OCR. Para habilitar, suba o "
-        "servidor (Ollama: `ollama serve` + `ollama pull %s`) ou desmarque o "
-        "fallback VLM na interface.",
+        "VLM indisponível em %s (%s). Nesta execução ficam desativados o "
+        "fallback de formulários e a descrição de fotografias; a extração "
+        "segue por template + OCR. Para habilitar: inicie o Ollama "
+        "(`ollama serve`) e garanta o modelo (`ollama pull %s`), ou "
+        "desmarque o VLM na interface.",
         base_url,
         exc,
         model or "qwen3-vl:8b-instruct",

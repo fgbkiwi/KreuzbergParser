@@ -97,7 +97,9 @@ def get_rapid_ocr_engine(*, rec_batch_num: int = 8):
             "Rec.model_type": ModelType.MOBILE,
             "Rec.rec_batch_num": max(1, int(rec_batch_num)),
             "Det.lang_type": LangDet.EN,
-            "Global.log_level": "warning",
+            # "error": empty detection on photo pages is expected and would
+            # otherwise spam "The text detection result is empty" per figure.
+            "Global.log_level": "error",
             "Global.model_root_dir": str(model_dir),
         }
         logger.info(
@@ -107,6 +109,13 @@ def get_rapid_ocr_engine(*, rec_batch_num: int = 8):
         )
         _engine = RapidOCR(params=params)
         _engine_rec_batch = rec_batch_num
+        # Belt-and-suspenders: RapidOCR uses its own logger module.
+        try:
+            from rapidocr.utils.log import logger as rapid_logger
+
+            rapid_logger.setLevel(logging.ERROR)
+        except Exception:
+            pass
         return _engine
 
 

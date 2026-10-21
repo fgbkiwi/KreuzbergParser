@@ -7,6 +7,7 @@ import flet as ft
 from pathlib import Path
 import logging
 import os
+import subprocess
 import sys
 import time
 import threading
@@ -22,6 +23,13 @@ from config import (
 from utils.gpu_detector import gpu_detector
 from utils.flet_ui import is_on_session_loop, session_loop
 from utils.logger import detach_process_log_file, log_visible_alert
+from utils.ollama_runtime import (
+    install_hint_windows,
+    is_ollama_preset,
+    probe_model,
+    pull_model,
+    try_start_server,
+)
 from core.kreuzberg_engine import KreuzbergOCREngine
 from core.markdown_converter import MarkdownConverter
 
@@ -205,12 +213,23 @@ class OCRApp:
         self.config = Config()
         self._loop = session_loop(page)
 
-        # GPU info (before default mode / radios)
+        # GPU info (before default mode / radios / VLM dropdown)
         self.gpu_info = gpu_detector.get_gpu_info()
         self.gpu_suitable, self.gpu_suitable_message = gpu_detector.is_gpu_suitable(
             self.config.MIN_VRAM_GB
         )
+        self.vlm_gpu_ok, self.vlm_gpu_message = gpu_detector.is_gpu_suitable(
+            float(getattr(self.config, "MIN_VRAM_VLM_GB", 8))
+        )
         logger.info("GPU Status: %s", self.gpu_info["message"])
+        if self.vlm_gpu_ok:
+            logger.info("VLM local: GPU adequada (%s)", self.vlm_gpu_message)
+        else:
+            logger.info(
+                "VLM local indisponível na UI (%s; mínimo %.0f GB VRAM).",
+                self.vlm_gpu_message,
+                float(getattr(self.config, "MIN_VRAM_VLM_GB", 8)),
+            )
         if not paddle_gpu_supported_on_platform():
             logger.info(
                 "PaddleOCR GPU desabilitado nesta plataforma "
@@ -231,6 +250,8 @@ class OCRApp:
         self._pending_stats: str | None = None
         self._last_ui_flush = 0.0
         self._flush_handle: asyncio.TimerHandle | None = None
+        self._ollama_pulling = False
+        self._ollama_status_code: str | None = None
 
         # Setup UI
         self.setup_ui()
@@ -368,17 +389,34 @@ class OCRApp:
             on_change=self.on_mode_changed,
         )
 
-        vlm_default = self.config.resolve_vlm_backend()
+        vlm_presets = self.config.vlm_presets_available(
+            local_gpu_ok=bool(self.vlm_gpu_ok)
+        )
+        vlm_default = self.config.resolve_vlm_backend_for_hardware(
+            local_gpu_ok=bool(self.vlm_gpu_ok)
+        )
+        if vlm_default not in vlm_presets:
+            vlm_default = "off"
         self.vlm_dropdown = ft.Dropdown(
-            label="VLM fallback (formulários / tabelas)",
+            label="VLM (formulários e descrição de imagens)",
             value=vlm_default,
             options=[
                 ft.DropdownOption(key=key, text=preset["label"])
-                for key, preset in self.config.VLM_PRESETS.items()
+                for key, preset in vlm_presets.items()
             ],
             dense=True,
             text_size=13,
             on_select=self.on_vlm_backend_changed,
+            disabled=len(vlm_presets) <= 1,
+            expand=True,
+        )
+        self.vlm_setup_button = ft.OutlinedButton(
+            "Baixar modelo",
+            icon=ft.Icons.DOWNLOAD,
+            visible=False,
+            disabled=True,
+            on_click=self.on_vlm_setup_clicked,
+            height=40,
         )
 
         gpu_status_text = self._get_gpu_status_text()
@@ -567,7 +605,14 @@ class OCRApp:
                                             ft.Container(
                                                 height=56,
                                                 alignment=ft.Alignment.CENTER_LEFT,
-                                                content=self.vlm_dropdown,
+                                                content=ft.Row(
+                                                    [
+                                                        self.vlm_dropdown,
+                                                        self.vlm_setup_button,
+                                                    ],
+                                                    spacing=8,
+                                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                                ),
                                             ),
                                         ],
                                         spacing=8,
@@ -649,6 +694,15 @@ class OCRApp:
                 padding=ft.Padding.only(left=16, top=8, right=16, bottom=6),
             )
         )
+        if not self.vlm_gpu_ok:
+            min_gb = float(getattr(self.config, "MIN_VRAM_VLM_GB", 8))
+            self.log_message(
+                f"VLM local oculto: {self.vlm_gpu_message} "
+                f"(mínimo {min_gb:.0f} GB VRAM para Qwen/vLLM).",
+                ft.Colors.ORANGE,
+            )
+        else:
+            self._refresh_ollama_setup_ui(log_status=True)
 
     def _get_gpu_status_text(self) -> str:
         if self.gpu_info["available"] and self.gpu_suitable:
@@ -789,15 +843,189 @@ class OCRApp:
             self.log_message(f"❌ Erro ao salvar log: {exc}", ft.Colors.RED)
 
     def on_vlm_backend_changed(self, e):
-        preset = self.config.vlm_preset(self.vlm_dropdown.value)
+        key = self.config.resolve_vlm_backend_for_hardware(
+            self.vlm_dropdown.value,
+            local_gpu_ok=bool(getattr(self, "vlm_gpu_ok", False)),
+        )
+        if key != (self.vlm_dropdown.value or ""):
+            self.vlm_dropdown.value = key
+            self._patch_page()
+        preset = self.config.vlm_preset(key)
         if preset["key"] == "off":
-            self.log_message("VLM fallback desligado (só templates).", ft.Colors.BLUE_700)
+            self._refresh_ollama_setup_ui(log_status=False)
+            if not getattr(self, "vlm_gpu_ok", False):
+                min_gb = float(getattr(self.config, "MIN_VRAM_VLM_GB", 8))
+                self.log_message(
+                    f"VLM desligado — GPU/VRAM insuficiente para Qwen/vLLM "
+                    f"(mínimo {min_gb:.0f} GB). Só templates + OCR.",
+                    ft.Colors.ORANGE,
+                )
+            else:
+                self.log_message(
+                    "VLM desligado (só templates + OCR; sem descrição de fotos).",
+                    ft.Colors.BLUE_700,
+                )
             return
         self.log_message(
             f"VLM: {preset['label']} → {preset.get('model') or '-'} "
-            f"({preset.get('base_url') or '-'})",
+            f"({preset.get('base_url') or '-'}) — formulários e descrição "
+            f"de imagens",
             ft.Colors.BLUE_700,
         )
+        self._refresh_ollama_setup_ui(log_status=True)
+
+    def _current_vlm_model(self) -> str:
+        key = self._resolve_run_vlm_backend()
+        preset = self.config.vlm_preset(key)
+        return str(preset.get("model") or "")
+
+    def _refresh_ollama_setup_ui(self, *, log_status: bool = False) -> None:
+        """Show/hide the Ollama setup button for Qwen presets."""
+        btn = getattr(self, "vlm_setup_button", None)
+        if btn is None:
+            return
+        key = self._resolve_run_vlm_backend()
+        if not is_ollama_preset(key) or self._ollama_pulling:
+            if not self._ollama_pulling:
+                btn.visible = False
+                btn.disabled = True
+                self._ollama_status_code = None
+                self._patch_page(btn)
+            return
+
+        model = self._current_vlm_model()
+        status = probe_model(model, base_url=self.config.vlm_preset(key).get("base_url"))
+        self._ollama_status_code = status.code
+
+        if status.ok:
+            btn.visible = False
+            btn.disabled = True
+            if log_status:
+                self.log_message(f"✅ {status.message}", ft.Colors.GREEN)
+            self._patch_page(btn)
+            return
+
+        labels = {
+            "missing_binary": "Instalar Ollama",
+            "server_down": "Iniciar Ollama",
+            "model_missing": "Baixar modelo",
+        }
+        icons = {
+            "missing_binary": ft.Icons.INSTALL_DESKTOP,
+            "server_down": ft.Icons.PLAY_ARROW,
+            "model_missing": ft.Icons.DOWNLOAD,
+        }
+        btn.text = labels.get(status.code, "Preparar VLM")
+        btn.icon = icons.get(status.code, ft.Icons.DOWNLOAD)
+        btn.visible = True
+        btn.disabled = False
+        if log_status:
+            self.log_message(f"⚠️ {status.message}", ft.Colors.ORANGE)
+            if status.code == "missing_binary" and sys.platform == "win32":
+                self.log_message(
+                    f"   Sugestão: {install_hint_windows()}",
+                    ft.Colors.ORANGE,
+                )
+            elif status.code == "model_missing":
+                self.log_message(
+                    f"   Clique em «Baixar modelo» ou rode: ollama pull {model}",
+                    ft.Colors.ORANGE,
+                )
+        self._patch_page(btn)
+
+    def on_vlm_setup_clicked(self, e):
+        if self._ollama_pulling or self.is_processing:
+            return
+        key = self._resolve_run_vlm_backend()
+        if not is_ollama_preset(key):
+            return
+        model = self._current_vlm_model()
+        status = probe_model(
+            model, base_url=self.config.vlm_preset(key).get("base_url")
+        )
+        self._ollama_status_code = status.code
+
+        if status.code == "missing_binary":
+            self.log_message(
+                "Instale o Ollama e reinicie o Kiwi Down. "
+                + (
+                    f"No Windows: `{install_hint_windows()}`"
+                    if sys.platform == "win32"
+                    else "https://ollama.com/download"
+                ),
+                ft.Colors.ORANGE,
+            )
+            if sys.platform == "win32":
+                try:
+                    subprocess.Popen(
+                        [
+                            "winget",
+                            "install",
+                            "Ollama.Ollama",
+                            "--accept-package-agreements",
+                            "--accept-source-agreements",
+                        ],
+                        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                    )
+                    self.log_message(
+                        "Assistente winget aberto — conclua a instalação do Ollama.",
+                        ft.Colors.BLUE_700,
+                    )
+                except OSError as exc:
+                    self.log_message(
+                        f"Não foi possível abrir o winget: {exc}",
+                        ft.Colors.RED,
+                    )
+            return
+
+        if status.code == "server_down":
+            self.log_message("Tentando iniciar o serviço Ollama…", ft.Colors.BLUE_700)
+            if try_start_server(binary=status.binary):
+                time.sleep(1.5)
+                self._refresh_ollama_setup_ui(log_status=True)
+            else:
+                self.log_message(
+                    "Não foi possível iniciar o Ollama. Abra o app Ollama manualmente.",
+                    ft.Colors.RED,
+                )
+            return
+
+        if status.code != "model_missing":
+            self._refresh_ollama_setup_ui(log_status=True)
+            return
+
+        self._ollama_pulling = True
+        self.vlm_setup_button.disabled = True
+        self.vlm_setup_button.text = "Baixando…"
+        self._patch_page(self.vlm_setup_button)
+        self.log_message(
+            f"⬇️ Baixando modelo Ollama `{model}` (pode levar vários minutos)…",
+            ft.Colors.BLUE_700,
+        )
+
+        def _worker():
+            def _line(msg: str) -> None:
+                self.log_message(f"   {msg}", ft.Colors.BLUE_GREY)
+
+            ok, detail = pull_model(
+                model, binary=status.binary, on_line=_line
+            )
+            self._ollama_pulling = False
+            if ok:
+                self.log_message(
+                    f"✅ Modelo `{model}` pronto para uso.",
+                    ft.Colors.GREEN,
+                )
+            else:
+                self.log_message(
+                    f"❌ Falha ao baixar `{model}`: {detail}",
+                    ft.Colors.RED,
+                )
+            self._loop.call_soon_threadsafe(
+                lambda: self._refresh_ollama_setup_ui(log_status=False)
+            )
+
+        threading.Thread(target=_worker, daemon=True, name="ollama-pull").start()
 
     def on_mode_changed(self, e):
         raw = getattr(e.control, "value", None) or e.control.value
@@ -827,10 +1055,16 @@ class OCRApp:
             bool(self.pdf_queue) and self.output_folder and not self.is_processing
         )
 
+    def _resolve_run_vlm_backend(self, backend: str | None = None) -> str:
+        return self.config.resolve_vlm_backend_for_hardware(
+            backend if backend is not None else self.vlm_dropdown.value,
+            local_gpu_ok=bool(getattr(self, "vlm_gpu_ok", False)),
+        )
+
     def _get_run_suffix(self) -> str:
         backend = self._run_vlm_backend
         if backend is None:
-            backend = self.config.resolve_vlm_backend(self.vlm_dropdown.value)
+            backend = self._resolve_run_vlm_backend()
         preset = self.config.vlm_preset(backend)
         return self.config.run_file_suffix(
             self.selected_mode,
@@ -856,6 +1090,10 @@ class OCRApp:
         duration = page_data.get("processing_time")
         dur = f", {duration:.2f}s" if duration is not None else ""
         subtype_bit = f"/{subtype}" if subtype else ""
+        n_desc = int(page_data.get("images_described") or 0)
+        desc_bit = (
+            f", {n_desc} figura(s) descrita(s)" if n_desc else ""
+        )
 
         if page_type == "native":
             return f"nativa{subtype_bit} ({library}, {device}{dur})"
@@ -863,13 +1101,21 @@ class OCRApp:
             n_img = len(page_data.get("images") or [])
             return (
                 f"híbrida{subtype_bit} ({library}, {device}, "
-                f"{n_img} img{dur})"
+                f"{n_img} img{desc_bit}{dur})"
             )
         if page_type == "image_page":
-            status = "FALHA" if page_data.get("ocr_failed") else "OCR"
+            if page_data.get("ocr_failed"):
+                status = "FALHA"
+            elif page_data.get("extraction_source") == "image_describe":
+                status = "DESCRIÇÃO"
+            else:
+                status = "OCR"
             src = page_data.get("extraction_source")
             src_bit = f", {src}" if src else ""
-            return f"{status}{subtype_bit} ({library}, {device}{src_bit}{dur})"
+            return (
+                f"{status}{subtype_bit} ({library}, {device}"
+                f"{src_bit}{desc_bit}{dur})"
+            )
         return f"tipo={page_type}"
 
     def _queue_label(self) -> str:
@@ -905,15 +1151,35 @@ class OCRApp:
             )
             return
 
+        if self._ollama_pulling:
+            self.log_message(
+                "⏳ Aguarde o download do modelo Ollama terminar antes de processar.",
+                ft.Colors.ORANGE,
+            )
+            return
+
+        run_vlm = self._resolve_run_vlm_backend()
+        if is_ollama_preset(run_vlm):
+            st = probe_model(
+                self.config.vlm_preset(run_vlm).get("model") or "",
+                base_url=self.config.vlm_preset(run_vlm).get("base_url"),
+            )
+            if not st.ok:
+                self.log_message(
+                    f"⚠️ VLM Qwen não está pronto ({st.message}). "
+                    "Use o botão ao lado do dropdown ou o processamento "
+                    "seguirá só com templates + OCR.",
+                    ft.Colors.ORANGE,
+                )
+                self._refresh_ollama_setup_ui(log_status=False)
+
         self.is_processing = True
         self.process_button.disabled = True
         self.clear_queue_button.disabled = True
         self._refresh_queue_list()
         # Snapshot Flet control values on the session thread. Reading them
         # from the worker can deadlock the Windows desktop client.
-        self._run_vlm_backend = self.config.resolve_vlm_backend(
-            self.vlm_dropdown.value
-        )
+        self._run_vlm_backend = run_vlm
         self.progress_bar.visible = True
         self.progress_bar.value = None
         self.progress_text.value = "Iniciando fila de conversão..."
@@ -945,7 +1211,7 @@ class OCRApp:
         batch_start = time.time()
         engine = None
 
-        vlm_backend = self._run_vlm_backend or self.config.resolve_vlm_backend()
+        vlm_backend = self._run_vlm_backend or self._resolve_run_vlm_backend()
         vlm_preset = self.config.vlm_preset(vlm_backend)
         enable_vlm = bool(vlm_preset.get("enabled"))
 
@@ -955,7 +1221,7 @@ class OCRApp:
         )
         self.log_message(f"   Modo: {self.selected_mode}")
         self.log_message(
-            f"   VLM fallback: {vlm_preset['label']}"
+            f"   VLM (formulários + imagens): {vlm_preset['label']}"
             + (
                 f" ({vlm_preset.get('model')})"
                 if enable_vlm and vlm_preset.get("model")

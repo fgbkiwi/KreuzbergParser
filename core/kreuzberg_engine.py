@@ -36,6 +36,7 @@ from core.page_classifier import (
     extract_cnj_process_number,
     extract_page_images_to_dir,
     prefer_process_folio,
+    strip_pje_boilerplate,
 )
 from core.page_layout import (
     LayoutRect,
@@ -540,6 +541,7 @@ class KreuzbergOCREngine:
         body = (classification.residual_text or "").strip()
         image_paths: List[str] = []
         figure_entries: List[Tuple[float, float, str, str]] = []
+        images_described = 0
 
         saved = extract_page_images_to_dir(
             pdf_path,
@@ -561,6 +563,8 @@ class KreuzbergOCREngine:
             ):
                 continue
             image_paths.append(str(path))
+            ocr_text = ""
+            table_mds: List[str] = []
             try:
                 ocr_text, has_tables, _lang, table_mds = self._ocr_image_file(
                     path, prefer_tables=True, dpi_hint=300
@@ -572,11 +576,10 @@ class KreuzbergOCREngine:
                     path.name,
                     exc,
                 )
-                continue
-            if not (ocr_text or "").strip():
-                continue
-            if is_duplicate_figure_text(ocr_text, body):
-                continue
+                has_tables = False
+                ocr_text = ""
+                table_mds = []
+
             fig_rect = None
             if info is not None and info.y is not None:
                 fig_rect = LayoutRect(
@@ -587,11 +590,30 @@ class KreuzbergOCREngine:
                 )
             if fig_rect is not None and native_text_covers_rect(layout, fig_rect):
                 continue
-            formatted = format_labor_document(
-                ocr_text,
-                detect_doc_kind_from_text(ocr_text),
-                tables_markdown=table_mds or None,
-            )
+
+            if self._ocr_text_is_usable(ocr_text):
+                if is_duplicate_figure_text(ocr_text, body):
+                    continue
+                formatted = format_labor_document(
+                    ocr_text,
+                    detect_doc_kind_from_text(ocr_text),
+                    tables_markdown=table_mds or None,
+                )
+            else:
+                # Photograph / figure with no usable text → VLM caption.
+                caption = self._maybe_describe_image(
+                    path,
+                    page=classification.page,
+                    label=path.name,
+                )
+                if not caption:
+                    continue
+                from core.vlm_ocr import format_image_description_block
+
+                formatted = format_image_description_block(caption)
+                images_described += 1
+                has_tables = False
+
             y = float(info.y) if info is not None and info.y is not None else 10_000.0
             x = float(info.x) if info is not None and info.x is not None else 0.0
             figure_entries.append((y, x, formatted, str(path)))
@@ -611,6 +633,7 @@ class KreuzbergOCREngine:
             "images": image_paths if self.config.EMBED_IMAGES_IN_MD else [],
             "has_tables": any("|" in (fig or "") for _y, _x, fig, _p in figure_entries),
             "doc_kind": classification.doc_kind,
+            "images_described": images_described,
             "signature_lines": self._signature_lines_from_raw(raw_text),
         }
 
@@ -721,6 +744,7 @@ class KreuzbergOCREngine:
                 )
 
         extraction_source = None
+        images_described = 0
         use_structured = self.enable_template_extraction and (
             kind in FORM_KINDS
             or kind in TEMPLATE_KINDS
@@ -750,6 +774,8 @@ class KreuzbergOCREngine:
                 body = structured.markdown.strip()
                 extraction_source = structured.source
                 has_tables = has_tables or structured.n_table_rows > 0
+                ocr_failed = False
+                failure_reason = None
                 logger.info(
                     "Page %s structured via %s (fill=%.2f kind=%s)",
                     classification.page,
@@ -767,6 +793,23 @@ class KreuzbergOCREngine:
                 body, kind, tables_markdown=table_mds or None
             )
             extraction_source = "labor_forms"
+
+        # Full-page photo / scan with no usable OCR and not a filled form →
+        # describe the scene with Qwen3-VL instead of leaving the page empty.
+        if not self._ocr_text_is_usable(body) and extraction_source != "vlm":
+            caption = self._maybe_describe_image(
+                png_bytes if png_bytes else raster_path,
+                page=classification.page,
+                label=f"page_{classification.page}",
+            )
+            if caption:
+                from core.vlm_ocr import format_image_description_block
+
+                body = format_image_description_block(caption)
+                extraction_source = "image_describe"
+                images_described = 1
+                ocr_failed = False
+                failure_reason = None
 
         images: List[str] = []
         if self.config.EMBED_IMAGES_IN_MD:
@@ -787,6 +830,7 @@ class KreuzbergOCREngine:
             "ocr_failure_reason": failure_reason,
             "doc_kind": kind,
             "extraction_source": extraction_source,
+            "images_described": images_described,
             "signature_lines": self._signature_lines_from_raw(raw_text),
         }
 
@@ -1158,6 +1202,7 @@ class KreuzbergOCREngine:
         if vlm_available(
             base_url=self.vlm_base_url or None,
             model=self.vlm_model or None,
+            timeout_s=8.0,
         ):
             return
         self.enable_vlm_fallback = False
@@ -1228,6 +1273,109 @@ class KreuzbergOCREngine:
         if idx is None:
             return None
         return info_by_num.get(idx) or info_by_num.get(idx + 1)
+
+    def _ocr_text_is_usable(self, text: Optional[str]) -> bool:
+        """True when OCR has real content beyond PJe stamps / watermarks.
+
+        Photo pages often OCR only ``Fls.``, ``PJe`` and the electronic
+        signature line. Counting those as "usable" skipped VLM description
+        and left empty MD after stamp cleanup (e.g. fls. 89 and 95).
+        """
+        residual, _stamp = strip_pje_boilerplate(text or "")
+        # Watermark fragments that survive line-oriented strip (e.g. "3i-PJe").
+        residual = re.sub(r"(?i)\bPJe\b", " ", residual)
+        residual = re.sub(r"(?i)\bFls\.?\s*:?\s*\d+\b", " ", residual)
+        residual = re.sub(r"(?i)\bDocumento\s+assinado\b[\s\S]*", " ", residual)
+        residual = re.sub(r"\s+", " ", residual).strip()
+        min_chars = int(getattr(self.config, "IMAGE_OCR_MIN_CHARS", 40) or 40)
+        alnum = sum(1 for c in residual if c.isalnum())
+        return alnum >= min_chars
+
+    def _image_description_enabled(self) -> bool:
+        if not getattr(self.config, "ENABLE_IMAGE_DESCRIPTION", True):
+            return False
+        if not self.enable_vlm_fallback:
+            return False
+        from core.vlm_ocr import supports_image_description
+
+        return supports_image_description(
+            base_url=self.vlm_base_url or None,
+            model=self.vlm_model or None,
+        )
+
+    @staticmethod
+    def _bytes_as_png(raw: bytes) -> Optional[bytes]:
+        """Ensure PNG bytes for the VLM (pdfimages may emit jpg/ppm/tif)."""
+        if not raw:
+            return None
+        if raw[:8] == b"\x89PNG\r\n\x1a\n":
+            return raw
+        try:
+            from io import BytesIO
+
+            from PIL import Image
+
+            with Image.open(BytesIO(raw)) as img:
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
+                buf = BytesIO()
+                img.save(buf, format="PNG")
+                return buf.getvalue()
+        except Exception:
+            return raw
+
+    def _maybe_describe_image(
+        self,
+        png_or_path: bytes | Path | str,
+        *,
+        page: int,
+        label: str = "",
+    ) -> Optional[str]:
+        """Call Qwen3-VL caption when enabled; return plain description or None."""
+        if not self._image_description_enabled():
+            return None
+
+        if isinstance(png_or_path, (bytes, bytearray)):
+            raw = bytes(png_or_path)
+        else:
+            path = Path(png_or_path)
+            try:
+                raw = path.read_bytes()
+            except OSError as exc:
+                logger.warning(
+                    "Não foi possível ler figura para descrição (pág. %s, %s): %s",
+                    page,
+                    label or path.name,
+                    exc,
+                )
+                return None
+
+        png_bytes = self._bytes_as_png(raw)
+        if not png_bytes:
+            return None
+
+        logger.info(
+            "Página %s: descrevendo imagem via VLM (%s)%s",
+            page,
+            self.vlm_model or "qwen",
+            f" — {label}" if label else "",
+        )
+        try:
+            from core.vlm_ocr import describe_image
+
+            return describe_image(
+                png_bytes,
+                base_url=self.vlm_base_url or None,
+                model=self.vlm_model or None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Descrição de imagem falhou (pág. %s, %s): %s",
+                page,
+                label or "-",
+                exc,
+            )
+            return None
 
     def _append_unique_figures(
         self,

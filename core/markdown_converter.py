@@ -32,6 +32,7 @@ _DOC_NUM_LINE_RE = re.compile(
 _PROC_NUM_LINE_RE = re.compile(
     r"(?mi)^\s*N[uú]mero do processo\s*:.*$"
 )
+# Legacy residual headings only — keep "### Descrição da imagem" in the body.
 _FIGURE_HEADING_RE = re.compile(
     r"(?mi)^###\s*Quadro\s*/\s*figura\s+\d+\s*$"
 )
