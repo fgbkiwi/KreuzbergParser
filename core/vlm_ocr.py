@@ -232,14 +232,31 @@ def supports_image_description(
     return bool(model) and (_is_ollama(base_url) or "qwen" in (model or "").lower())
 
 
-def format_image_description_block(description: str) -> str:
-    """Markdown block inserted into page text for a described figure/page."""
+def format_image_description_block(
+    description: str,
+    *,
+    index: Optional[int] = None,
+) -> str:
+    """Markdown block inserted into page text for a described figure/page.
+
+    A single caption keeps ``### Descrição da imagem``. When several
+    captions share a page, pass ``index`` (1-based) so the headings differ.
+    """
     body = (description or "").strip()
     if not body:
         return ""
-    if body.startswith(IMAGE_DESCRIPTION_HEADING):
+    if index is None or int(index) < 1:
+        if body.startswith(IMAGE_DESCRIPTION_HEADING):
+            return body
+        return f"{IMAGE_DESCRIPTION_HEADING}\n{body}"
+    heading = f"{IMAGE_DESCRIPTION_HEADING} {int(index)}"
+    if (
+        body == heading
+        or body.startswith(heading + "\n")
+        or body.startswith(heading + "\r\n")
+    ):
         return body
-    return f"{IMAGE_DESCRIPTION_HEADING}\n{body}"
+    return f"{heading}\n{body}"
 
 
 def describe_image(

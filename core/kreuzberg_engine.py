@@ -794,9 +794,34 @@ class KreuzbergOCREngine:
             )
             extraction_source = "labor_forms"
 
-        # Full-page photo / scan with no usable OCR and not a filled form →
-        # describe the scene with Qwen3-VL instead of leaving the page empty.
-        if not self._ocr_text_is_usable(body) and extraction_source != "vlm":
+        # Photo pages: several embedded pictures get one block each.
+        # Zero or one content figure (a full-page JPEG is the common case)
+        # keeps a single caption of the page raster — never both.
+        per_figure = None
+        if (
+            self._image_description_enabled()
+            and not self._ocr_text_is_usable(body)
+            and not self._structured_form_extracted(extraction_source, kind)
+        ):
+            per_figure = self._describe_image_page_figures(
+                pdf_path, classification, images_dir
+            )
+        if per_figure is not None:
+            if per_figure["text"]:
+                body = per_figure["text"]
+                if per_figure["images_described"]:
+                    extraction_source = "image_describe"
+                images_described = per_figure["images_described"]
+                has_tables = has_tables or per_figure["has_tables"]
+                ocr_failed = False
+                failure_reason = None
+        elif (
+            not self._ocr_text_is_usable(body)
+            and extraction_source != "vlm"
+            and not self._structured_form_extracted(extraction_source, kind)
+        ):
+            # Full-page photo / scan with no usable OCR and not a filled form →
+            # describe the scene with Qwen3-VL instead of leaving the page empty.
             caption = self._maybe_describe_image(
                 png_bytes if png_bytes else raster_path,
                 page=classification.page,
@@ -1324,12 +1349,155 @@ class KreuzbergOCREngine:
         except Exception:
             return raw
 
+    def _structured_form_extracted(
+        self, extraction_source: Optional[str], kind: Optional[str]
+    ) -> bool:
+        """True when a form template or the form VLM already filled the page."""
+        if extraction_source == "vlm":
+            return True
+        if extraction_source == "template" and (
+            kind in FORM_KINDS or kind in TEMPLATE_KINDS
+        ):
+            return True
+        return False
+
+    def _describe_image_page_figures(
+        self,
+        pdf_path: Path,
+        classification,
+        images_dir: Path,
+    ) -> Optional[Dict]:
+        """One block per embedded photo when the page has two or more.
+
+        Returns None when extraction fails or fewer than two content figures
+        remain, so the caller keeps the single page-raster caption.
+        ``images_described`` counts only figures that received a VLM caption.
+        """
+        try:
+            saved = extract_page_images_to_dir(
+                pdf_path,
+                classification.page,
+                images_dir,
+                prefix="imgpage",
+                skip_logos=True,
+                page_images=classification.images,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Falha ao extrair imagens da página %s: %s",
+                classification.page,
+                exc,
+            )
+            return None
+
+        info_by_num = {img.num: img for img in (classification.images or [])}
+        figures: List[Tuple[float, float, int, Path]] = []
+        for order, path in enumerate(saved):
+            try:
+                if path.stat().st_size < 3000:
+                    continue
+            except OSError:
+                continue
+            info = self._image_info_for_path(path, info_by_num)
+            if info is not None and (
+                info.is_logo_or_icon() or info.is_banner_or_footer_image()
+            ):
+                continue
+            if info is None or not info.is_content_figure():
+                continue
+            y = float(info.y) if info.y is not None else 10_000.0
+            x = float(info.x) if info.x is not None else 0.0
+            figures.append((y, x, order, path))
+
+        if len(figures) < 2:
+            return None
+
+        figures.sort(key=lambda item: (item[0], item[1], item[2]))
+        prepared: List[Dict] = []
+        has_tables = False
+        for figure_no, (_y, _x, _order, path) in enumerate(figures, start=1):
+            ocr_text = ""
+            table_mds: List[str] = []
+            try:
+                ocr_text, _has, _lang, table_mds = self._ocr_image_file(
+                    path, prefer_tables=True, dpi_hint=300
+                )
+            except Exception as exc:
+                logger.warning(
+                    "OCR da figura falhou na página %s (%s): %s",
+                    classification.page,
+                    path.name,
+                    exc,
+                )
+                ocr_text = ""
+                table_mds = []
+            if self._ocr_text_is_usable(ocr_text):
+                formatted = format_labor_document(
+                    ocr_text,
+                    detect_doc_kind_from_text(ocr_text),
+                    tables_markdown=table_mds or None,
+                )
+                if formatted.strip():
+                    if table_mds or "|" in formatted:
+                        has_tables = True
+                    prepared.append(
+                        {"kind": "ocr", "text": formatted.strip(), "n": figure_no}
+                    )
+                    continue
+            prepared.append(
+                {"kind": "vlm", "path": path, "caption": "", "n": figure_no}
+            )
+
+        from core.vlm_ocr import format_image_description_block
+
+        figure_total = len(figures)
+        images_described = 0
+        for item in prepared:
+            if item["kind"] != "vlm":
+                continue
+            path = item["path"]
+            caption = self._maybe_describe_image(
+                path,
+                page=classification.page,
+                label=path.name,
+                # k/K is the figure's place in visual order, not only among captions.
+                index=item["n"],
+                total=figure_total,
+            )
+            if not caption:
+                continue
+            item["caption"] = caption
+            images_described += 1
+
+        blocks: List[str] = []
+        seen = 0
+        for item in prepared:
+            if item["kind"] == "ocr":
+                blocks.append(item["text"])
+                continue
+            caption = item.get("caption") or ""
+            if not caption:
+                continue
+            seen += 1
+            index = seen if images_described >= 2 else None
+            formatted = format_image_description_block(caption, index=index)
+            if formatted:
+                blocks.append(formatted)
+
+        return {
+            "text": "\n\n".join(blocks).strip(),
+            "images_described": images_described,
+            "has_tables": has_tables,
+        }
+
     def _maybe_describe_image(
         self,
         png_or_path: bytes | Path | str,
         *,
         page: int,
         label: str = "",
+        index: Optional[int] = None,
+        total: Optional[int] = None,
     ) -> Optional[str]:
         """Call Qwen3-VL caption when enabled; return plain description or None."""
         if not self._image_description_enabled():
@@ -1354,9 +1522,13 @@ class KreuzbergOCREngine:
         if not png_bytes:
             return None
 
+        which = "imagem"
+        if index is not None and total:
+            which = f"imagem {int(index)}/{int(total)}"
         logger.info(
-            "Página %s: descrevendo imagem via VLM (%s)%s",
+            "Página %s: descrevendo %s via VLM (%s)%s",
             page,
+            which,
             self.vlm_model or "qwen",
             f" — {label}" if label else "",
         )
