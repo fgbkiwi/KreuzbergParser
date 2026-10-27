@@ -32,6 +32,13 @@ from utils.ollama_runtime import (
 )
 from core.kreuzberg_engine import KreuzbergOCREngine
 from core.markdown_converter import MarkdownConverter
+from utils.token_count import (
+    CONTEXT_TOKEN_LIMIT,
+    compare_with_kiwi,
+    comparison_log_line,
+    context_window_alert,
+    find_kiwi_estimate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +250,8 @@ class OCRApp:
         self.is_processing = False
         self._queue_index = 0
         self._queue_total = 0
-        self._log_lines: list[str] = []
+        self._log_entries: list[tuple[str, str | None]] = []
+        self._token_summaries: list[str] = []
         self._log_lock = threading.Lock()
         self._pending_progress: tuple[float | None, str] | None = None
         self._run_vlm_backend: str | None = None
@@ -439,14 +447,11 @@ class OCRApp:
             "Aguardando seleção de arquivos...", size=14
         )
 
-        self.log_field = ft.TextField(
-            value="",
-            multiline=True,
-            read_only=True,
+        self.log_view = ft.ListView(
             expand=True,
-            border_width=1,
-            border_color=ft.Colors.GREY_400,
-            text_size=12,
+            spacing=1,
+            auto_scroll=True,
+            padding=6,
         )
 
         self.stats_field = ft.TextField(
@@ -646,9 +651,16 @@ class OCRApp:
                                                 ],
                                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                             ),
-                                            self.log_field,
+                                            ft.Container(
+                                                content=self.log_view,
+                                                expand=True,
+                                                border=ft.Border.all(1, ft.Colors.GREY_400),
+                                                border_radius=4,
+                                                bgcolor=ft.Colors.WHITE,
+                                            ),
                                         ],
                                         spacing=8,
+                                        expand=True,
                                     ),
                                 ),
                                 ft.Container(
@@ -826,7 +838,8 @@ class OCRApp:
             self.log_message("❌ Pasta de destino nao selecionada", ft.Colors.RED)
             return
 
-        log_text = self.log_field.value.strip()
+        with self._log_lock:
+            log_text = "\n".join(message for message, _color in self._log_entries).strip()
         if not log_text:
             self.log_message("⚠️ Log vazio. Nada para salvar.", ft.Colors.ORANGE)
             return
@@ -1184,8 +1197,9 @@ class OCRApp:
         self.progress_bar.value = None
         self.progress_text.value = "Iniciando fila de conversão..."
         with self._log_lock:
-            self._log_lines.clear()
-        self.log_field.value = ""
+            self._log_entries.clear()
+            self._token_summaries.clear()
+        self.log_view.controls.clear()
         self._pending_progress = (None, self.progress_text.value)
         self._pending_stats = None
         self.stats_field.value = "📊 Estatísticas:\n   • Aguardando classificação..."
@@ -1210,6 +1224,7 @@ class OCRApp:
         fail_count = 0
         batch_start = time.time()
         engine = None
+        self._token_summaries = []
 
         vlm_backend = self._run_vlm_backend or self._resolve_run_vlm_backend()
         vlm_preset = self.config.vlm_preset(vlm_backend)
@@ -1294,13 +1309,18 @@ class OCRApp:
                 f"ok={ok_count} falha={fail_count} total={self._queue_total}",
                 ft.Colors.GREEN if fail_count == 0 else ft.Colors.ORANGE,
             )
-            self.update_stats(
+            summary = (
                 f"📊 Resumo da fila:\n"
                 f"   • Total: {self._queue_total}\n"
                 f"   • Sucesso: {ok_count}\n"
                 f"   • Falha: {fail_count}\n"
                 f"   • Tempo: {batch_time:.2f}s"
             )
+            if self._token_summaries:
+                summary += "\n" + "\n".join(
+                    f"   • {line}" for line in self._token_summaries
+                )
+            self.update_stats(summary)
             if fail_count == 0:
                 self.update_progress(1.0, "✅ Fila concluída!")
             else:
@@ -1401,6 +1421,12 @@ class OCRApp:
         output_path = Path(output_folder) / output_filename
         md_path = converter.convert_to_markdown(result, str(output_path))
         self.log_message(f"✅ Markdown salvo: {md_path}", ft.Colors.GREEN)
+        self._report_markdown_tokens(
+            name=name,
+            pdf_path=Path(pdf_path),
+            output_folder=Path(output_folder),
+            token_count=getattr(converter, "last_token_count", None),
+        )
 
         audit_log = result.get("metadata", {}).get("log_path")
         if audit_log:
@@ -1426,6 +1452,14 @@ class OCRApp:
             f"   • Total de palavras: {stats['total_words']:,}\n"
             f"   • Velocidade: {stats['processing_speed']}"
         )
+        token_count = getattr(converter, "last_token_count", None)
+        if token_count is not None:
+            stats_text += "\n" + token_count.stats_block()
+            if token_count.over_limit():
+                stats_text += (
+                    f"\n   • Acima de {CONTEXT_TOKEN_LIMIT:,} tokens: "
+                    "ver alerta vermelho no log"
+                )
         self.update_stats(stats_text)
         self.update_progress(
             (queue_index + 1) / total_pdfs,
@@ -1452,9 +1486,68 @@ class OCRApp:
             ["[fim da sessão]"] + str(alert).splitlines(),
         )
 
+    def _report_markdown_tokens(
+        self,
+        *,
+        name: str,
+        pdf_path: Path,
+        output_folder: Path,
+        token_count,
+    ) -> None:
+        """Registra a contagem real e o alerta de janela de contexto."""
+        if token_count is None:
+            self.log_message(
+                "Não foi possível contar os tokens do markdown.",
+                ft.Colors.ORANGE,
+            )
+            return
+
+        self._token_summaries.append(token_count.summary_for(name))
+        self.log_message(token_count.log_line())
+
+        lookup = find_kiwi_estimate(pdf_path, output_folder)
+        divergences = ()
+        if lookup.estimate is not None:
+            divergences = compare_with_kiwi(token_count, lookup.estimate)
+            logger.info(
+                "Estimativa KiwiSplitter em %s: openai=%s gemini=%s",
+                lookup.estimate.log_path,
+                lookup.estimate.openai,
+                lookup.estimate.gemini,
+            )
+        elif lookup.message:
+            self.log_message(lookup.message)
+            logger.info("%s", lookup.message)
+
+        alert = context_window_alert(token_count, divergences)
+        hot = any(item.exceeds for item in divergences)
+        if divergences and not (alert and hot):
+            line = comparison_log_line(divergences)
+            if line:
+                self.log_message(line, ft.Colors.ORANGE if hot else None)
+                logger.info("%s", line)
+        if alert:
+            self.log_message(alert, ft.Colors.RED)
+            logger.warning("%s — %s", name, alert)
+
+    def _visible_log_entries(
+        self, entries: list[tuple[str, str | None]]
+    ) -> list[tuple[str, str | None]]:
+        """Mantém o trecho recente e todas as mensagens vermelhas de alerta."""
+        if len(entries) <= _MAX_VISIBLE_LOG_LINES:
+            return entries
+        start = len(entries) - _MAX_VISIBLE_LOG_LINES
+        indexes = set(range(start, len(entries)))
+        indexes.update(
+            index
+            for index, (_message, color) in enumerate(entries)
+            if color == ft.Colors.RED
+        )
+        return [entries[index] for index in sorted(indexes)]
+
     def log_message(self, message: str, color=None):
         with self._log_lock:
-            self._log_lines.append(message)
+            self._log_entries.append((message, color))
         self._schedule_ui_flush()
 
     def update_progress(self, value: float | None, text: str):
@@ -1510,14 +1603,23 @@ class OCRApp:
         self._last_ui_flush = time.monotonic()
 
         with self._log_lock:
-            lines = list(self._log_lines)
+            entries = list(self._log_entries)
         pending_progress = self._pending_progress
         pending_stats = self._pending_stats
         self._pending_stats = None
 
-        visible = lines[-_MAX_VISIBLE_LOG_LINES:]
-        self.log_field.value = "\n".join(visible)
-        controls: list[ft.Control] = [self.log_field]
+        visible = self._visible_log_entries(entries)
+        self.log_view.controls = [
+            ft.Text(
+                message,
+                size=12,
+                color=color or ft.Colors.BLACK,
+                selectable=True,
+                no_wrap=False,
+            )
+            for message, color in visible
+        ]
+        controls: list[ft.Control] = [self.log_view]
         if pending_progress is not None:
             self.progress_bar.value = pending_progress[0]
             self.progress_text.value = pending_progress[1]

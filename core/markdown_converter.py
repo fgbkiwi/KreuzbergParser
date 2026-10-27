@@ -46,13 +46,44 @@ class MarkdownConverter:
         from config import Config
 
         self.config = config or Config()
+        self.last_token_count = None
 
     def convert_to_markdown(self, result_data: Dict, output_path: str) -> str:
         output_path = Path(output_path)
         md_content = self._build_markdown_content(result_data, output_path.parent)
+        self.last_token_count = self._count_markdown_tokens(md_content)
+        if self.last_token_count is not None and self.config.INCLUDE_STATISTICS:
+            md_content = self._insert_token_stats(
+                md_content, self.last_token_count.markdown_bullets()
+            )
         output_path.write_text(md_content, encoding=self.config.MD_ENCODING)
         logger.info("Markdown saved: %s", output_path)
+        if self.last_token_count is not None:
+            logger.info("%s", self.last_token_count.log_line())
         return str(output_path)
+
+    def _count_markdown_tokens(self, md_content: str):
+        try:
+            from utils.token_count import count_markdown_tokens
+
+            return count_markdown_tokens(md_content)
+        except Exception:
+            logger.exception("Falha ao contar tokens do markdown")
+            return None
+
+    @staticmethod
+    def _insert_token_stats(md_content: str, bullets: list[str]) -> str:
+        if not bullets:
+            return md_content
+        block = "\n".join(bullets)
+        anchor = "- **Total de caracteres**:"
+        index = md_content.rfind(anchor)
+        if index == -1:
+            return md_content.rstrip() + "\n" + block + "\n"
+        line_end = md_content.find("\n", index)
+        if line_end == -1:
+            return md_content + "\n" + block + "\n"
+        return md_content[: line_end + 1] + block + "\n" + md_content[line_end + 1 :]
 
     def _build_markdown_content(
         self, result_data: Dict, md_parent: Path

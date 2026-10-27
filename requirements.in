@@ -28,6 +28,9 @@ flet-desktop==0.86.5
 tqdm
 psutil
 python-dotenv
+# Contagem de tokens do markdown (OpenAI cl100k e Gemini/Gemma3)
+tiktoken
+sentencepiece
 # Detecção de GPU/VRAM via NVML do driver NVIDIA (sem torch)
 nvidia-ml-py
 
