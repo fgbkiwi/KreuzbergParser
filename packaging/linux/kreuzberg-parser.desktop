@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=KreuzbergParser
+Name=Kiwi Down
 GenericName=OCR para PDFs judiciais
 Comment=OCR inteligente para PDFs judiciais trabalhistas (PJe)
 Exec=kreuzberg-parser
-Icon=kreuzberg-parser
+Icon=kiwi-down
 Terminal=false
 Categories=Office;Graphics;
 Keywords=OCR;PDF;PJe;Kreuzberg;
