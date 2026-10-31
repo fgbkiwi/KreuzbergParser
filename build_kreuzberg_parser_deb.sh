@@ -29,10 +29,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 APP_NAME="KreuzbergParser"
+DISPLAY_NAME="Kiwi Down"
 PACKAGE_NAME="kreuzberg-parser"
 OPT_PREFIX="/opt/kreuzberg-parser"
 GITHUB_REPO="fgbkiwi/KreuzbergParser"
-ICON_SOURCE="assets/kreuzberg-parser.png"
+# Fonte do ícone do lançador. O Pop!_OS (GNOME) não exibe .ico no tema
+# hicolor; o build rasteriza cada frame em PNG.
+ICON_SOURCE="assets/KiwiDown.ico"
+ICON_NAME="kiwi-down"
 PACKAGING_DIR="packaging/linux"
 REQ_FILE="requirements.txt"
 BUMP_SCRIPT="bump_version.py"
@@ -79,7 +83,7 @@ case "$BUMP_PART" in
 esac
 
 echo "========================================"
-echo " Building ${APP_NAME} Linux .deb"
+echo " Building ${DISPLAY_NAME} Linux .deb"
 echo "========================================"
 
 command -v uv >/dev/null 2>&1 || die "uv not found. Install: https://docs.astral.sh/uv/"
@@ -176,7 +180,7 @@ mkdir -p \
   "$VENV_STAGING" \
   "${STAGING}/usr/bin" \
   "${STAGING}/usr/share/applications" \
-  "${STAGING}/usr/share/icons/hicolor/256x256/apps" \
+  "${STAGING}/usr/share/icons/hicolor" \
   "${STAGING}/DEBIAN"
 
 # --- Create venv + install deps ------------------------------------------
@@ -306,7 +310,12 @@ for f in main.py config.py _kreuzberg_launcher.py kreuzberg.toml; do
 done
 
 mkdir -p "${APP_STAGING}/assets"
-cp -a "$ICON_SOURCE" "${APP_STAGING}/assets/"
+install -m 0644 "$ICON_SOURCE" "${APP_STAGING}/assets/KiwiDown.ico"
+# Logo da splash (GTK). O ícone do menu vem do .ico, não deste PNG.
+if [[ -f "${ROOT}/assets/kreuzberg-parser.png" ]]; then
+  install -m 0644 "${ROOT}/assets/kreuzberg-parser.png" \
+    "${APP_STAGING}/assets/kreuzberg-parser.png"
+fi
 # GTK splash helper (run via /usr/bin/python3 + python3-gi, not the venv).
 install -m 0644 "${PACKAGING_DIR}/splash.py" "${APP_STAGING}/splash.py"
 mkdir -p "${APP_STAGING}/packaging/linux"
@@ -316,8 +325,34 @@ install -m 0755 "${PACKAGING_DIR}/kreuzberg-parser.wrapper" \
   "${STAGING}/usr/bin/kreuzberg-parser"
 install -m 0644 "${PACKAGING_DIR}/kreuzberg-parser.desktop" \
   "${STAGING}/usr/share/applications/kreuzberg-parser.desktop"
-install -m 0644 "$ICON_SOURCE" \
-  "${STAGING}/usr/share/icons/hicolor/256x256/apps/kreuzberg-parser.png"
+# Nome e ícone do lançador vêm deste script (o .desktop é só o molde).
+sed -i \
+  -e "s/^Name=.*/Name=${DISPLAY_NAME}/" \
+  -e "s/^Icon=.*/Icon=${ICON_NAME}/" \
+  "${STAGING}/usr/share/applications/kreuzberg-parser.desktop"
+
+log "  Rasterizando ${ICON_SOURCE} para o tema de ícones hicolor..."
+"$VENV_PY" - "$ICON_SOURCE" "${STAGING}/usr/share/icons/hicolor" "$ICON_NAME" <<'PY' || die "failed to rasterize ${ICON_SOURCE} (Pillow)"
+import sys
+from pathlib import Path
+
+from PIL import Image
+
+src = Path(sys.argv[1])
+hicolor = Path(sys.argv[2])
+icon_name = sys.argv[3]
+image = Image.open(src)
+sizes = sorted(image.ico.sizes()) if getattr(image, "format", None) == "ICO" else []
+if not sizes:
+    raise SystemExit(f"{src} não é um ICO com frames")
+for width, height in sizes:
+    frame = image.ico.getimage((width, height)).convert("RGBA")
+    dest_dir = hicolor / f"{width}x{height}" / "apps"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{icon_name}.png"
+    frame.save(dest, format="PNG")
+    print(f"icon: {width}x{height} -> {dest}")
+PY
 
 # --- DEBIAN metadata -----------------------------------------------------
 INSTALLED_SIZE_KB="$(du -sk "$STAGING" | awk '{print $1}')"
@@ -333,8 +368,8 @@ Maintainer: KreuzbergParser Maintainers <noreply@github.com>
 Depends: tesseract-ocr, tesseract-ocr-por, poppler-utils, libgtk-3-0, libgstreamer1.0-0, libmpv1 | libmpv2, python3-gi, gir1.2-gtk-3.0
 Suggests: nvidia-driver-580
 Homepage: https://github.com/${GITHUB_REPO}
-Description: OCR inteligente para PDFs judiciais (PJe)
- KreuzbergParser empacota Python 3.12 + ONNX Runtime GPU (CUDA 13 / cuDNN 9)
+Description: Kiwi Down - OCR inteligente para PDFs judiciais (PJe)
+ Kiwi Down empacota Python 3.12 + ONNX Runtime GPU (CUDA 13 / cuDNN 9)
  e a UI Flet. Instala em ${OPT_PREFIX}.
  .
  Express/CPU funcionam sem GPU. Modos GPU exigem driver NVIDIA 580+
@@ -368,7 +403,7 @@ if [[ "$DO_PUBLISH" -eq 0 ]]; then
   echo "Para anexar depois a uma Release existente:"
   echo "  gh release upload ${TAG} \"${OUT_DEB}\" --repo ${GITHUB_REPO} --clobber"
   echo "Ou criar Release se ainda não existir:"
-  echo "  gh release create ${TAG} \"${OUT_DEB}\" --repo ${GITHUB_REPO} --title \"${APP_NAME} ${VERSION}\" --latest"
+  echo "  gh release create ${TAG} \"${OUT_DEB}\" --repo ${GITHUB_REPO} --title \"${DISPLAY_NAME} ${VERSION}\" --latest"
 else
   log "[5/5] Commit/tag/push e publicação de ${TAG} no GitHub..."
   if [[ -n "$BUMP_PART" ]]; then
@@ -389,7 +424,7 @@ else
   fi
 
   NOTES="$(cat <<EOF
-Instalador Linux (.deb amd64) do ${APP_NAME} ${VERSION} para Pop!_OS / Ubuntu.
+Instalador Linux (.deb amd64) do ${DISPLAY_NAME} ${VERSION} para Pop!_OS / Ubuntu.
 
 \`\`\`bash
 sudo apt install ./${APP_NAME}_${VERSION}_amd64.deb
@@ -409,7 +444,7 @@ EOF
     log "Criando Release ${TAG} com o .deb..."
     gh release create "$TAG" "$OUT_DEB" \
       --repo "$GITHUB_REPO" \
-      --title "${APP_NAME} ${VERSION}" \
+      --title "${DISPLAY_NAME} ${VERSION}" \
       --notes "$NOTES" \
       --verify-tag \
       --latest
