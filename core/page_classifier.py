@@ -203,6 +203,8 @@ class PageClassification:
     doc_kind: Optional[str] = None
     sumario_tipo: Optional[str] = None
     sumario_titulo: Optional[str] = None
+    # Intimação, despacho, decisão e sentença: não entram no corte de timbre.
+    letterhead_exempt: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -801,7 +803,12 @@ def classify_pdf_pages(
     medium_figure_coverage: float = 0.08,
 ) -> List[PageClassification]:
     """Classify every physical page given pdftotext output per page."""
-    from core.pje_sumario import resolve_entry_for_page, tipo_to_kind
+    from core.pje_sumario import (
+        extract_stamp_document_ids,
+        is_letterhead_preserved_tipo,
+        resolve_entry_for_page,
+        tipo_to_kind,
+    )
 
     _ = full_page_coverage, medium_figure_coverage  # legacy knobs unused
 
@@ -823,6 +830,18 @@ def classify_pdf_pages(
     for idx, text in enumerate(page_texts, start=1):
         stamp_preview = extract_pje_stamp(text or "")
         entry = resolve_entry_for_page(stamp_preview.signature_ids, sumario)
+        # Carimbo antigo não entra na classificação de OCR. Serve só para
+        # reconhecer intimação e ato judicial e preservá-los no corte de timbre.
+        preserved_entry = entry
+        if preserved_entry is None:
+            preserved_entry = resolve_entry_for_page(
+                extract_stamp_document_ids(text or ""),
+                sumario,
+            )
+        exempt = bool(
+            preserved_entry
+            and is_letterhead_preserved_tipo(preserved_entry.tipo)
+        )
         force = bool(entry and entry.is_force_image_form())
         petition = bool(entry and entry.is_petition_like())
         kind = None
@@ -837,18 +856,18 @@ def classify_pdf_pages(
                 force = False
                 kind = None
 
-        results.append(
-            classify_page(
-                idx,
-                text,
-                by_page.get(idx, []),
-                residual_native_chars=residual_native_chars,
-                residual_hybrid_chars=residual_hybrid_chars,
-                force_image_ocr=force,
-                doc_kind=kind,
-                sumario_tipo=tipo,
-                sumario_titulo=titulo,
-                is_petition_like=petition,
-            )
+        classified = classify_page(
+            idx,
+            text,
+            by_page.get(idx, []),
+            residual_native_chars=residual_native_chars,
+            residual_hybrid_chars=residual_hybrid_chars,
+            force_image_ocr=force,
+            doc_kind=kind,
+            sumario_tipo=tipo,
+            sumario_titulo=titulo,
+            is_petition_like=petition,
         )
+        classified.letterhead_exempt = exempt
+        results.append(classified)
     return results

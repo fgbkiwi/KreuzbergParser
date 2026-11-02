@@ -2,6 +2,9 @@
 Strip repeating petition letterheads and contact footers from native text.
 
 Only touches header/footer bands. Body addresses and party names are kept.
+Intimação, despacho, decisão and sentença are left intact: those pages still
+vote in the repeated-line sets, but the cut never applies to them, so a
+judge's closing survives no matter how many intimações quote the same act.
 """
 from __future__ import annotations
 
@@ -136,12 +139,25 @@ def _drop_band_lines(
     return cleaned
 
 
+def _preserved_judicial_page(page: PageClassification) -> bool:
+    """True when this page must keep its closing and any quoted dispositivo."""
+    if getattr(page, "letterhead_exempt", False):
+        return True
+    from core.pje_sumario import is_letterhead_preserved_tipo
+
+    return is_letterhead_preserved_tipo(getattr(page, "sumario_tipo", None))
+
+
 def apply_letterhead_strip(
     pages: Sequence[PageClassification],
     *,
     min_repeat_pages: int = 3,
 ) -> None:
-    """Mutate residual_text on native/hybrid pages to drop banners/footers."""
+    """Mutate residual_text on native/hybrid pages to drop banners/footers.
+
+    Intimação, despacho, decisão and sentença are excluded from the cut.
+    They still contribute lines to the repeated header/footer sets.
+    """
     repeated_header = _repeated_band_lines(
         pages, min_pages=min_repeat_pages, band="header"
     )
@@ -152,6 +168,8 @@ def apply_letterhead_strip(
         if page.page_class not in {"native", "hybrid"}:
             continue
         if page.force_image_ocr:
+            continue
+        if _preserved_judicial_page(page):
             continue
         page.residual_text = _drop_band_lines(
             page.residual_text or "",

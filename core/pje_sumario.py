@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -112,6 +113,53 @@ def extract_signature_ids(text: str) -> List[str]:
             seen.add(doc_id)
             ids.append(doc_id)
     return ids
+
+
+# Carimbo antigo do PJe, sem a palavra "Documento" e com data no meio da linha:
+# "Assinado eletronicamente por: NOME - Juntado em: 19/07/2022 15:35:07 - f744e07"
+# O id fica no fim da linha para não capturar "Juntado".
+_STAMP_ID_RE = re.compile(
+    r"(?mi)^[^\n]*\bassinado eletronicamente por\b[^\n]*-\s*([0-9A-Za-z]{7})\s*$"
+)
+
+# Atos cujo fecho (nome e cargo do juiz) e o dispositivo citado na intimação
+# não podem ser tratados como rodapé, haja quantas intimações houver.
+_LETTERHEAD_PRESERVED_TIPOS = (
+    "intimacao",
+    "despacho",
+    "decisao",
+    "sentenca",
+)
+
+
+def extract_stamp_document_ids(text: str) -> List[str]:
+    """Ids de carimbo no fim da linha, no formato novo e no antigo."""
+    ids: List[str] = []
+    seen = set()
+    for match in _STAMP_ID_RE.finditer(text or ""):
+        doc_id = match.group(1).lower()
+        if doc_id not in seen:
+            seen.add(doc_id)
+            ids.append(doc_id)
+    return ids
+
+
+def _fold_tipo(tipo: Optional[str]) -> str:
+    text = unicodedata.normalize("NFD", tipo or "")
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    text = text.lower()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def is_letterhead_preserved_tipo(tipo: Optional[str]) -> bool:
+    """Intimação e atos judiciais ficam fora do corte de timbre."""
+    folded = _fold_tipo(tipo)
+    if not folded:
+        return False
+    return any(
+        folded == key or folded.startswith(key + " ") or folded.startswith(key + "(")
+        for key in _LETTERHEAD_PRESERVED_TIPOS
+    )
 
 
 def parse_sumario_text(text: str) -> Dict[str, SumarioEntry]:
