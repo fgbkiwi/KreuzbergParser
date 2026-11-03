@@ -596,6 +596,23 @@ def _image_index_from_name(path: Path) -> Optional[int]:
         return None
 
 
+def _file_looks_like_logo(path: Path) -> bool:
+    """True for social-icon / stamp sized files when pdfimages metadata is missing."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            width, height = img.size
+        if max(width, height) <= LOGO_MAX_SIDE and width * height <= LOGO_MAX_AREA:
+            return True
+        if width <= 150 and height <= 150:
+            return True
+    except Exception:
+        if path.stat().st_size < 4000:
+            return True
+    return False
+
+
 def extract_page_images_to_dir(
     pdf_path: str | Path,
     page_num: int,
@@ -662,8 +679,10 @@ def extract_page_images_to_dir(
             continue
         if info is not None and not info.is_content_figure():
             continue
+        if info is None and _file_looks_like_logo(path):
+            continue
         meaningful.append(path)
-    return meaningful if meaningful else [p for p in saved if p.stat().st_size >= 2048]
+    return meaningful
 
 
 # ---------------------------------------------------------------------------

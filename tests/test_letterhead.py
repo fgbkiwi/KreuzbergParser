@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import unittest
 
-from core.letterhead import _looks_like_contact, apply_letterhead_strip
+from core.letterhead import (
+    _PHONE_RE,
+    _looks_like_contact,
+    _looks_like_person_name,
+    apply_letterhead_strip,
+)
 from core.page_classifier import PageClassification
 from core.pje_sumario import (
     SumarioEntry,
@@ -149,6 +154,70 @@ class LetterheadPreservationTests(unittest.TestCase):
         self.assertIn("OAB/DF 74.070", page.residual_text)
         self.assertIn("CEP 71996-220", page.residual_text)
         self.assertNotIn(contact, page.residual_text)
+
+    def test_conta_e_pix_nao_parecem_telefone(self):
+        self.assertTrue(_PHONE_RE.search("+55 (61) 3308-2684"))
+        self.assertTrue(_PHONE_RE.search("(61) 3308-2684"))
+        self.assertTrue(_PHONE_RE.search("61 3308-2684"))
+        self.assertFalse(
+            _PHONE_RE.search("Banco Nubank, Agência 0001, Conta Corrente 60008841-5")
+        )
+        self.assertFalse(_PHONE_RE.search("Chave PIX 05311008121"))
+        self.assertFalse(_looks_like_contact("●    Banco Nubank, Agência 0001, Conta Corrente 60008841-5;"))
+        self.assertFalse(_looks_like_contact("●    Chave PIX 05311008121."))
+        self.assertFalse(_looks_like_contact("●    CPF: 053.110.081-21;"))
+
+    def test_pagina_curta_nao_apaga_oab_do_fecho(self):
+        page = _page(
+            1,
+            "\n".join(
+                [
+                    "Termos em que pede deferimento.",
+                    "Brasília/DF, data da assinatura digital.",
+                    "Beatriz Albuquerque Pereira",
+                    "OAB/DF 71.169",
+                    "+55 (61) 3308-2684 | escritorio@exemplo.com",
+                    "EQ 1, lote 13/14, Planaltina/DF",
+                ]
+            ),
+            tipo="Manifestação",
+        )
+        apply_letterhead_strip([page], min_repeat_pages=3)
+        self.assertIn("Beatriz Albuquerque Pereira", page.residual_text)
+        self.assertIn("OAB/DF 71.169", page.residual_text)
+        self.assertIn("Termos em que pede deferimento", page.residual_text)
+
+    def test_enderecamento_repetido_nao_e_timbre(self):
+        self.assertTrue(_looks_like_person_name("Beatriz Albuquerque Pereira"))
+        pages = []
+        for n in range(3):
+            text = "\n".join(
+                [
+                    "AO JUÍZO DA 9ª VARA DO TRABALHO DE BRASÍLIA/DF",
+                    "ALDERIONE DA SILVA CAMÊLO JÚNIOR, devidamente qualificado nos presentes",
+                    "autos, vem, respeitosamente, à presença de Vossa Excelência, por intermédio de sua",
+                    "advogada, informar e requerer a seguir:",
+                    f"Pedido proprio da peticao numero {n} com fatos distintos do acordo.",
+                    "Por último, informa-se que os novos pagamentos deverão ser realizados na conta",
+                    "da procuradora Dra. Beatriz Albuquerque Pereira, devidamente constituída nos autos em",
+                    "epígrafe. Junta-se abaixo as informações necessárias para a realização do(s) pagamento(s).",
+                    "●    CPF: 053.110.081-21;",
+                    "●    Banco Nubank, Agência 0001, Conta Corrente 60008841-5;",
+                    "●    Chave PIX 05311008121.",
+                    "+55 (61) 3308-2684 |        @monsuethalbuquerque.adv |             monsuethealbuquerqueadv@gmail.com",
+                    "EQ 1, lote 13/14, apartamento 101 – Setor Residencial Norte, Planaltina/DF",
+                ]
+            )
+            pages.append(_page(n + 1, text, tipo="Manifestação"))
+        apply_letterhead_strip(pages, min_repeat_pages=3)
+        page = pages[0]
+        self.assertIn("AO JUÍZO DA 9ª VARA", page.residual_text)
+        self.assertIn("ALDERIONE DA SILVA CAMÊLO JÚNIOR", page.residual_text)
+        self.assertIn("advogada, informar e requerer a seguir", page.residual_text)
+        self.assertIn("Banco Nubank", page.residual_text)
+        self.assertIn("Chave PIX 05311008121", page.residual_text)
+        self.assertIn("CPF: 053.110.081-21", page.residual_text)
+        self.assertNotIn("monsuethealbuquerqueadv@gmail.com", page.residual_text)
 
     def test_carimbo_antigo_de_despacho_fica_isento_sem_mudar_o_ocr(self):
         entries = {

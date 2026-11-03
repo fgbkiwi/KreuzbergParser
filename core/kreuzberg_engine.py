@@ -562,6 +562,11 @@ class KreuzbergOCREngine:
                 info.is_logo_or_icon() or info.is_banner_or_footer_image()
             ):
                 continue
+            if info is None:
+                from core.page_classifier import _file_looks_like_logo
+
+                if _file_looks_like_logo(path):
+                    continue
             image_paths.append(str(path))
             ocr_text = ""
             table_mds: List[str] = []
