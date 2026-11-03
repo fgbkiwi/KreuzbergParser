@@ -52,18 +52,24 @@ def _non_empty_lines(text: str) -> List[str]:
 
 
 def _looks_like_contact(line: str) -> bool:
-    if not line.strip():
+    stripped = (line or "").strip()
+    if not stripped:
         return False
-    if _KEEP_RE.search(line):
+    if _KEEP_RE.search(stripped):
+        return False
+    # Body prose of a procuraçao / petição often cites OAB, CEP or an
+    # address. Those lines sit in the footer band of short pages and must
+    # not be treated as letterhead just because they contain a contact token.
+    if len(stripped) > 90 or len(stripped.split()) > 12:
         return False
     return bool(
-        _EMAIL_RE.search(line)
-        or _PHONE_RE.search(line)
-        or _CEP_RE.search(line)
-        or _OAB_RE.search(line)
-        or _URL_RE.search(line)
-        or _FIRM_RE.search(line)
-        or _ADDR_RE.search(line)
+        _EMAIL_RE.search(stripped)
+        or _PHONE_RE.search(stripped)
+        or _CEP_RE.search(stripped)
+        or _OAB_RE.search(stripped)
+        or _URL_RE.search(stripped)
+        or _FIRM_RE.search(stripped)
+        or _ADDR_RE.search(stripped)
     )
 
 

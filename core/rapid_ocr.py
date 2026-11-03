@@ -67,6 +67,34 @@ def _png_to_rgb(png_bytes: bytes) -> np.ndarray:
         return np.asarray(rgb)
 
 
+def _rapidocr_params(*, rec_batch_num: int, model_dir: Path) -> dict:
+    """RapidOCR constructor params for Portuguese PJe scans.
+
+    The default Chinese 0/180 angle classifier (``Global.use_cls``) flips
+    roughly every other line of upright Latin legal text. Recognition then
+    yields garbage below ``text_score`` 0.5 and RapidOCR drops the line
+    with no warning — e.g. the procuraçao clause starting ``5584/70,
+    confessar, desistir...``.
+    """
+    from rapidocr.utils.typings import LangDet, LangRec, ModelType, OCRVersion
+
+    return {
+        "EngineConfig.onnxruntime.use_cuda": True,
+        "EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search": "HEURISTIC",
+        "Rec.lang_type": LangRec.LATIN,
+        "Rec.ocr_version": OCRVersion.PPOCRV5,
+        "Rec.model_type": ModelType.MOBILE,
+        "Rec.rec_batch_num": max(1, int(rec_batch_num)),
+        "Det.lang_type": LangDet.EN,
+        # PJe rasters are already upright. The CH classifier is not.
+        "Global.use_cls": False,
+        # "error": empty detection on photo pages is expected and would
+        # otherwise spam "The text detection result is empty" per figure.
+        "Global.log_level": "error",
+        "Global.model_root_dir": str(model_dir),
+    }
+
+
 def get_rapid_ocr_engine(*, rec_batch_num: int = 8):
     """Lazy singleton RapidOCR engine with CUDA + Latin recognizer."""
     global _engine, _engine_rec_batch
@@ -86,25 +114,12 @@ def get_rapid_ocr_engine(*, rec_batch_num: int = 8):
         ensure_cv2()
 
         from rapidocr import RapidOCR
-        from rapidocr.utils.typings import LangDet, LangRec, ModelType, OCRVersion
 
         model_dir = _model_root_dir()
-        params = {
-            "EngineConfig.onnxruntime.use_cuda": True,
-            "EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search": "HEURISTIC",
-            "Rec.lang_type": LangRec.LATIN,
-            "Rec.ocr_version": OCRVersion.PPOCRV5,
-            "Rec.model_type": ModelType.MOBILE,
-            "Rec.rec_batch_num": max(1, int(rec_batch_num)),
-            "Det.lang_type": LangDet.EN,
-            # "error": empty detection on photo pages is expected and would
-            # otherwise spam "The text detection result is empty" per figure.
-            "Global.log_level": "error",
-            "Global.model_root_dir": str(model_dir),
-        }
+        params = _rapidocr_params(rec_batch_num=rec_batch_num, model_dir=model_dir)
         logger.info(
             "Starting RapidOCR GPU (PP-OCRv5 latin + onnxruntime-gpu CUDA, "
-            "models=%s)",
+            "use_cls=false, models=%s)",
             model_dir,
         )
         _engine = RapidOCR(params=params)
@@ -119,9 +134,51 @@ def get_rapid_ocr_engine(*, rec_batch_num: int = 8):
         return _engine
 
 
+def _boxes_to_text(boxes, txts: Sequence) -> str:
+    """Join OCR snippets in visual reading order (top-to-bottom, left-to-right)."""
+    entries: List[Tuple[float, float, float, str]] = []
+    for i, raw in enumerate(txts or ()):
+        text = str(raw).strip() if raw else ""
+        if not text:
+            continue
+        y0 = float(i)
+        x0 = 0.0
+        height = 10.0
+        if boxes is not None and i < len(boxes):
+            box = np.asarray(boxes[i], dtype=float)
+            if box.ndim == 2 and box.shape[-1] >= 2 and box.size >= 4:
+                xs = box[:, 0]
+                ys = box[:, 1]
+                x0 = float(xs.min())
+                y0 = float(ys.min())
+                height = max(float(ys.max() - y0), 1.0)
+        entries.append((y0, x0, height, text))
+    if not entries:
+        return ""
+
+    med_h = float(np.median([h for _y, _x, h, _t in entries])) or 10.0
+    line_tol = max(10.0, 0.5 * med_h)
+    entries.sort(key=lambda e: (e[0], e[1]))
+    lines: List[List[Tuple[float, float, float, str]]] = []
+    current: List[Tuple[float, float, float, str]] = [entries[0]]
+    current_y = entries[0][0]
+    for entry in entries[1:]:
+        if abs(entry[0] - current_y) <= line_tol:
+            current.append(entry)
+        else:
+            current.sort(key=lambda e: e[1])
+            lines.append(current)
+            current = [entry]
+            current_y = entry[0]
+    current.sort(key=lambda e: e[1])
+    lines.append(current)
+    return "\n".join(" ".join(item[3] for item in line) for line in lines).strip()
+
+
 def _output_to_tuple(out) -> Tuple[str, bool, Optional[str], List[str]]:
     txts = getattr(out, "txts", None) or ()
-    text = "\n".join(str(t) for t in txts if t).strip()
+    boxes = getattr(out, "boxes", None)
+    text = _boxes_to_text(boxes, txts)
     return text, False, "pt", []
 
 
@@ -132,7 +189,8 @@ def ocr_png_bytes(
 ) -> Tuple[str, bool, Optional[str], List[str]]:
     engine = get_rapid_ocr_engine(rec_batch_num=rec_batch_num)
     image = _png_to_rgb(png_bytes)
-    out = engine(image)
+    # Per-call override in case a cached engine still has use_cls=True.
+    out = engine(image, use_cls=False)
     return _output_to_tuple(out)
 
 
@@ -145,5 +203,5 @@ def ocr_png_batch(
     results = []
     for png_bytes in png_list:
         image = _png_to_rgb(png_bytes)
-        results.append(_output_to_tuple(engine(image)))
+        results.append(_output_to_tuple(engine(image, use_cls=False)))
     return results

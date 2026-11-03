@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from core.letterhead import apply_letterhead_strip
+from core.letterhead import _looks_like_contact, apply_letterhead_strip
 from core.page_classifier import PageClassification
 from core.pje_sumario import (
     SumarioEntry,
@@ -107,6 +107,48 @@ class LetterheadPreservationTests(unittest.TestCase):
             self.assertNotIn(timbre, page.residual_text)
             self.assertNotIn(rodape, page.residual_text)
             self.assertIn("Texto proprio da manifestacao", page.residual_text)
+
+    def test_prosa_com_oab_ou_cep_nao_parece_contato(self):
+        body_oab = (
+            "LOUISE HELENE DE AZEVEDO TEIXEIRA, brasileira, solteira, "
+            "inscrita na OAB/SP 375.105 e OAB/DF 74.074;"
+        )
+        body_cep = (
+            "Brasília, DF, CEP 71996-220, pelo presente instrumento de "
+            "procuração nomeia e constitui como procuradores"
+        )
+        self.assertFalse(_looks_like_contact(body_oab))
+        self.assertFalse(_looks_like_contact(body_cep))
+        self.assertTrue(_looks_like_contact("www.lbs.adv.br"))
+        self.assertTrue(_looks_like_contact("(61) 3366-8100"))
+        self.assertTrue(_looks_like_contact("OAB/DF 1272/07"))
+
+    def test_prosa_com_oab_ou_cep_no_rodape_nao_e_timbre(self):
+        contact = "www.lbs.adv.br"
+        pages = []
+        for n in range(3):
+            text = "\n".join(
+                [
+                    "Timbre repetido do escritorio de peticionamento",
+                    *[f"Paragrafo proprio da peticao {n} linha {i}" for i in range(8)],
+                    (
+                        f"Brasília, DF, CEP 71996-22{n}, pelo presente instrumento "
+                        "de procuração nomeia e constitui como procuradores"
+                    ),
+                    (
+                        "LOUISE HELENE DE AZEVEDO TEIXEIRA, brasileira, solteira, "
+                        f"inscrita na OAB/SP 375.105 e OAB/DF 74.07{n};"
+                    ),
+                    contact,
+                    "(61) 3366-8100",
+                ]
+            )
+            pages.append(_page(n + 1, text, tipo="Petição Inicial"))
+        apply_letterhead_strip(pages, min_repeat_pages=3)
+        page = pages[0]
+        self.assertIn("OAB/DF 74.070", page.residual_text)
+        self.assertIn("CEP 71996-220", page.residual_text)
+        self.assertNotIn(contact, page.residual_text)
 
     def test_carimbo_antigo_de_despacho_fica_isento_sem_mudar_o_ocr(self):
         entries = {
