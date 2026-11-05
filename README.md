@@ -596,14 +596,14 @@ pip install kreuzberg
 
 ### Problema: Flet não abre interface
 
-**Não atualize o Flet para 1.x.** Este projeto usa a API **0.86** (`ft.app`). Na 1.0, `ft.app` foi removido (virou `ft.run`) e a UI quebra com `AttributeError: module 'flet' has no attribute 'app'`. Mantenha `flet==0.86.5` / `flet-desktop==0.86.5` (já pinados em `requirements.txt` e `requirements.in`).
+O entry point é `ft.run` (Flet 1.x). `flet` e `flet-desktop` ficam em `>=1.1,<2` em `requirements.in` — a mesma versão nos dois. Não instale Flet 2.x nem misture versões.
 
 **Solução:**
 
-1. Verificar Python 3.9+: `python --version`
-2. Reinstalar a versão pinada (não use `--upgrade`):
+1. Verificar Python 3.12: `python --version`
+2. Reinstalar pelo lock do projeto (não use `pip install -U flet` solto):
    ```bash
-   uv pip install "flet==0.86.5" "flet-desktop==0.86.5"
+   ./scripts/update_deps.sh --sync
    ```
 3. Verificar logs em `logs/` (`{CNJ}_ocr_{modo}_{modelo}_AAAAMMDD_HHMMSS.log` após PROCESSAR PDF)
 
@@ -611,7 +611,7 @@ pip install kreuzberg
 
 ### Problema: log e barra de progresso só atualizam ao ganhar/perder foco
 
-No Flet 0.86 desktop, `page.update()` de uma thread de trabalho enfileira o patch numa `asyncio.Queue` **não thread-safe**. O cliente Flutter só pinta quando um evento da janela (foco, clique) acorda o loop de envio.
+No Flet desktop (desde a linha 0.70, inclusive 1.x), `page.update()` de uma thread de trabalho enfileira o patch numa `asyncio.Queue` **não thread-safe**. O cliente Flutter só pinta quando um evento da janela (foco, clique) acorda o loop de envio.
 
 **Correção neste projeto:** o OCR corre em `asyncio.to_thread`; log, barra e estatísticas só chamam `page.update()` no event loop da sessão (`page.session.connection.loop`), via `utils/flet_ui.py`. Não chame `page.update()` de `threading.Thread` / `threading.Timer`.
 

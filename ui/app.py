@@ -321,7 +321,7 @@ class OCRApp:
             auto_scroll=False,
         )
 
-        self.clear_queue_button = ft.ElevatedButton(
+        self.clear_queue_button = ft.Button(
             content=ft.Text("Limpar fila"),
             on_click=self.on_clear_queue_clicked,
             icon=ft.Icons.CLEAR_ALL,
@@ -333,8 +333,9 @@ class OCRApp:
             label="Pasta de Destino",
             read_only=True,
             expand=True,
-            border_width=1,
-            border_color=ft.Colors.GREY_400,
+            border=ft.OutlineInputBorder(
+                side=ft.BorderSide(width=1, color=ft.Colors.GREY_400),
+            ),
             hint_text="Clique no botão para selecionar...",
         )
 
@@ -459,12 +460,13 @@ class OCRApp:
             multiline=True,
             read_only=True,
             expand=True,
-            border_width=1,
-            border_color=ft.Colors.GREY_400,
+            border=ft.OutlineInputBorder(
+                side=ft.BorderSide(width=1, color=ft.Colors.GREY_400),
+            ),
             text_size=12,
         )
 
-        self.process_button = ft.ElevatedButton(
+        self.process_button = ft.Button(
             content=ft.Text("🚀 PROCESSAR FILA"),
             on_click=self.on_process_clicked,
             disabled=True,
@@ -476,7 +478,7 @@ class OCRApp:
             ),
         )
 
-        self.save_log_button = ft.ElevatedButton(
+        self.save_log_button = ft.Button(
             content=ft.Text("💾 Salvar Log"),
             on_click=self.on_save_log_clicked,
             height=32,
@@ -525,7 +527,7 @@ class OCRApp:
                                                 expand=True,
                                             ),
                                             self.queue_count_text,
-                                            ft.ElevatedButton(
+                                            ft.Button(
                                                 content=ft.Text("📂 Selecionar PDFs"),
                                                 on_click=self.handle_pick_pdf,
                                                 icon=ft.Icons.PICTURE_AS_PDF,
@@ -546,7 +548,7 @@ class OCRApp:
                                     ft.Row(
                                         [
                                             self.output_folder_field,
-                                            ft.ElevatedButton(
+                                            ft.Button(
                                                 content=ft.Text("📁 Pasta Destino"),
                                                 on_click=self.handle_pick_folder,
                                                 icon=ft.Icons.FOLDER,
@@ -1684,7 +1686,7 @@ async def _show_splash(page: ft.Page, duration_s: float = _SPLASH_DURATION_S) ->
     img_h = _SPLASH_GIF_HEIGHT * scale
     offset_x = -_SPLASH_SIDE_CROP_PX * scale
 
-    # Prefer assets-relative name (most reliable with ft.app assets_dir).
+    # Prefer assets-relative name (most reliable with ft.run assets_dir).
     # Fall back to absolute path if the file lives outside assets_dir.
     assets = _assets_dir()
     if gif_path is not None and gif_path.parent.resolve() == assets.resolve():
@@ -1753,7 +1755,7 @@ def run_app():
 
         gif = find_splash_gif()
         assets = str(gif.parent) if gif is not None else str(_assets_dir())
-        splash_debug("ft.app assets_dir=%s", assets)
+        splash_debug("ft.run assets_dir=%s", assets)
     except Exception:
         assets = str(_assets_dir())
 
@@ -1802,4 +1804,5 @@ def run_app():
             pass
 
     # Hidden until main() reveals the window with content painted.
-    ft.app(target=main, assets_dir=assets, view=ft.AppView.FLET_APP_HIDDEN)
+    # `target=` was removed in Flet 1.0; pass the handler as `main`.
+    ft.run(main, assets_dir=assets, view=ft.AppView.FLET_APP_HIDDEN)

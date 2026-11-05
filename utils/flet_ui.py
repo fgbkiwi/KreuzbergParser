@@ -1,4 +1,4 @@
-"""Thread-safe Flet UI updates (Flet 0.70+ / 0.86 desktop).
+"""Thread-safe Flet UI updates (Flet 0.70+ / 1.x desktop).
 
 ``FletSocketServer.send_message`` does::
 
@@ -67,17 +67,17 @@ def patch_flet_desktop_no_console() -> None:
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | flags
         return await _orig_async_exec(*args, **kwargs)
 
-    def open_flet_view(page_url, assets_dir, hidden):
+    def open_flet_view(*args, **kwargs):
         subprocess.Popen = _popen_no_console  # type: ignore[assignment]
         try:
-            return _orig_open(page_url, assets_dir, hidden)
+            return _orig_open(*args, **kwargs)
         finally:
             subprocess.Popen = _orig_popen  # type: ignore[assignment]
 
-    async def open_flet_view_async(page_url, assets_dir, hidden):
+    async def open_flet_view_async(*args, **kwargs):
         asyncio.create_subprocess_exec = _async_exec_no_console  # type: ignore[assignment]
         try:
-            return await _orig_open_async(page_url, assets_dir, hidden)
+            return await _orig_open_async(*args, **kwargs)
         finally:
             asyncio.create_subprocess_exec = _orig_async_exec  # type: ignore[assignment]
 

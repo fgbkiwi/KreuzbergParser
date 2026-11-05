@@ -20,9 +20,11 @@ opencv-python-headless>=4.8,<5
 pillow
 
 # Interface Gráfica
-# Flet 1.0 removeu ft.app (virou ft.run) e quebra a UI atual; manter 0.86.x.
-flet==0.86.5
-flet-desktop==0.86.5
+# 1.x: ft.run no lugar de ft.app; ElevatedButton virou Button.
+# Teto no próximo major, no mesmo estilo de opencv-python-headless (<5).
+# flet-desktop exige flet na mesma versão exata.
+flet>=1.1,<2
+flet-desktop>=1.1,<2
 
 # Utilities
 tqdm

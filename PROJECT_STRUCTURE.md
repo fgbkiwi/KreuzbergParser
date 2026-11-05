@@ -138,7 +138,7 @@ KreuzbergParser/
 - Progress bar e log (flush limitado a ~0,3 s, últimas 200 linhas visíveis)
 - Estatísticas
 
-**Atualização da UI (Flet 0.86):** `page.update()` **não** pode ser chamado da thread de OCR. A fila roda em thread de worker; log/barra saltam para o loop da sessão (`utils/flet_ui.py`). Sem isso, a tela só refresca ao ganhar ou perder foco.
+**Atualização da UI (Flet 1.x):** `page.update()` **não** pode ser chamado da thread de OCR. A fila roda em thread de worker; log/barra saltam para o loop da sessão (`utils/flet_ui.py`). Sem isso, a tela só refresca ao ganhar ou perder foco.
 
 ### 6️⃣ utils/gpu_detector.py (75 linhas)
 **Propósito**: Detecção e validação de GPU
@@ -159,7 +159,7 @@ KreuzbergParser/
 ### 8️⃣ utils/flet_ui.py
 **Propósito**: Marshaling de patches Flet para o event loop da sessão
 **Por quê**: `FletSocketServer.send_message` usa `asyncio.Queue.put_nowait`, que não é thread-safe. `page.update()` fora do loop só chega ao Flutter no próximo evento da janela (foco/clique).
-**Uso**: `session_loop(page)`, `is_on_session_loop(page)`, `call_on_session_loop(...)`. Reutilizável em outros apps Flet 0.70+/0.86.
+**Uso**: `session_loop(page)`, `is_on_session_loop(page)`, `call_on_session_loop(...)`. Reutilizável em outros apps Flet 0.70+ / 1.x.
 
 ---
 

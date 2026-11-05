@@ -113,11 +113,11 @@ brew install tesseract tesseract-lang
 
 ### ❌ Interface não abre
 
-**Não atualize o Flet para 1.x** (`pip install --upgrade flet` / `uv pip install -U flet`). O projeto depende da API **0.86** (`ft.app`); na 1.0 isso vira `ft.run` e a app falha com `AttributeError: module 'flet' has no attribute 'app'`. Use só `flet==0.86.5` e `flet-desktop==0.86.5`.
+A UI usa Flet 1.x (`ft.run`). `flet` e `flet-desktop` ficam na mesma versão, faixa `>=1.1,<2`. Não rode `pip install -U flet` solto e não misture as duas versões.
 
 **Solução:**
 ```bash
-uv pip install "flet==0.86.5" "flet-desktop==0.86.5"
+./scripts/update_deps.sh --sync
 python main.py
 ```
 
@@ -125,7 +125,7 @@ Se ainda não funcionar, verificar logs em `logs/` e se o Cursor está usando `.
 
 ### ❌ Log e barra de progresso só mudam ao clicar na janela / Alt+Tab
 
-Isso é um bug clássico do Flet 0.86: `page.update()` feito fora do event loop da sessão não chega ao Flutter até o próximo evento da janela.
+Isso continua no Flet 1.x (desde a linha 0.70): `page.update()` feito fora do event loop da sessão não chega ao Flutter até o próximo evento da janela.
 
 O KreuzbergParser já corrige isso (`asyncio.to_thread` + `utils/flet_ui.py`). Se ainda ocorrer após atualizar o código, não chame `page.update()` de threads próprias; no Wayland, como fallback: `GDK_BACKEND=x11 .venv/bin/python main.py`.
 
