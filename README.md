@@ -128,6 +128,24 @@ O pipeline é afinado para PDFs exportados pelo **PJe-JT**:
 
 
 
+### 🧾 Manifesto dos documentos
+
+Junto de cada Markdown é gravado um `<nome>.manifesto.json`: para cada página, o ID do documento do PJe, o tipo e o título que constam do SUMÁRIO, as folhas e se o OCR falhou. Com ele, outros programas sabem onde começam e terminam a petição inicial, a contestação, as atas e os laudos, sem reprocessar o PDF.
+
+### ⌨️ Uso sem interface gráfica
+
+Para chamar a conversão a partir de outros programas (por exemplo o [Yaguareté](https://github.com/fgbkiwi/Yaguarete)):
+
+```bash
+python kreuzberg_cli.py autos.pdf --saida pasta_destino --modo cpu --json
+```
+
+- `--modo`: `express`, `cpu`, `gpu`, `paddle_cpu` ou `paddle_gpu` (padrão: `cpu`)
+- `--vlm`: `off`, `qwen`, `qwen3`, `nemotron`... (padrão: `off`)
+- `--json`: a última linha da saída padrão traz um JSON com os caminhos do Markdown e do manifesto, o número de páginas e a contagem de tokens
+
+---
+
 ## 🛠️ Instalação
 
 

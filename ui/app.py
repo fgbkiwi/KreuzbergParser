@@ -1423,6 +1423,14 @@ class OCRApp:
         output_path = Path(output_folder) / output_filename
         md_path = converter.convert_to_markdown(result, str(output_path))
         self.log_message(f"✅ Markdown salvo: {md_path}", ft.Colors.GREEN)
+        # Índice dos documentos do PJe, página a página, ao lado do Markdown.
+        try:
+            from core.manifest import write_manifest
+
+            manifest_path = write_manifest(result, md_path, getattr(engine, "_sumario", None))
+            self.log_message(f"🗂️ Manifesto dos documentos: {manifest_path}")
+        except Exception:
+            logging.getLogger(__name__).exception("Falha ao gravar o manifesto dos autos")
         self._report_markdown_tokens(
             name=name,
             pdf_path=Path(pdf_path),
