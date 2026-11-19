@@ -63,6 +63,19 @@ ProgressCallback = Callable[[int, int, Dict], None]
 # is reused for the lifetime of the process.
 _NATIVE_PADDLE_CUDA_PROBE: Optional[Tuple[bool, Optional[BaseException], object]] = None
 
+# ONNX Runtime / CUDA messages that mean "GPU ran out of memory".
+# CUBLAS failure 3 == CUBLAS_STATUS_ALLOC_FAILED.
+_GPU_OOM_RE = re.compile(
+    r"CUBLAS failure 3\b|CUBLAS_STATUS_ALLOC_FAILED|CUDNN_STATUS_ALLOC_FAILED"
+    r"|cudaErrorMemoryAllocation|CUDA_ERROR_OUT_OF_MEMORY|out of memory"
+    r"|Failed to allocate memory",
+    re.IGNORECASE,
+)
+
+
+def _is_gpu_oom(exc: BaseException) -> bool:
+    return bool(_GPU_OOM_RE.search(str(exc)))
+
 # Document kinds that benefit from high DPI + Tesseract tables
 FORM_KINDS = {
     "trct",
@@ -91,6 +104,8 @@ class KreuzbergOCREngine:
         self._paddle_gpu = None
         self._paddle_native_cuda_error: Optional[BaseException] = None
         self._paddle_gpu_fallback_lines: List[str] = []
+        # Imagens cujo OCR na GPU falhou por falta de VRAM e foi refeito na CPU.
+        self._gpu_oom_cpu_retries = 0
         self._sumario = {}
         self._layouts = {}
         self.enable_template_extraction = bool(
@@ -934,7 +949,31 @@ class KreuzbergOCREngine:
         )
         kwargs: dict[str, Any] = {"config": extraction_config}
 
-        result = kreuzberg.extract_bytes_sync(png_bytes, mime_type, **kwargs)
+        try:
+            result = kreuzberg.extract_bytes_sync(png_bytes, mime_type, **kwargs)
+        except Exception as exc:
+            acc = getattr(extraction_config, "acceleration", None)
+            if getattr(acc, "provider", None) != "cuda" or not _is_gpu_oom(exc):
+                raise
+            # VRAM cheia (ex.: VLM no Ollama ocupando a GPU): refaz esta
+            # imagem na CPU em vez de perder o texto.
+            self._gpu_oom_cpu_retries += 1
+            if self._gpu_oom_cpu_retries == 1 or self._gpu_oom_cpu_retries % 50 == 0:
+                logger.warning(
+                    "GPU sem memória no PaddleOCR — OCR refeito na CPU "
+                    "(%s imagem(ns) até agora). Erro: %s",
+                    self._gpu_oom_cpu_retries,
+                    str(exc).splitlines()[0][-200:],
+                )
+            cpu_config, _ = self._build_extraction_config(
+                force_ocr=True,
+                prefer_tables=prefer_tables or bool(form_kind in FORM_KINDS),
+                force_tesseract=force_tesseract,
+                force_cpu=True,
+            )
+            result = kreuzberg.extract_bytes_sync(
+                png_bytes, mime_type, config=cpu_config
+            )
         return self._ocr_result_tuple(result)
 
     # ------------------------------------------------------------------
@@ -947,6 +986,7 @@ class KreuzbergOCREngine:
         force_ocr: bool = False,
         prefer_tables: bool = False,
         force_tesseract: bool = False,
+        force_cpu: bool = False,
     ):
         language = self.mode_config.get("language", "por")
         backend = self.mode_config.get("backend", "tesseract")
@@ -1030,7 +1070,7 @@ class KreuzbergOCREngine:
 
         acceleration = None
         if backend == "paddleocr":
-            if use_gpu and self.mode == ProcessingMode.PADDLE_GPU:
+            if use_gpu and not force_cpu and self.mode == ProcessingMode.PADDLE_GPU:
                 acceleration = kreuzberg.AccelerationConfig(
                     provider="cuda",
                     device_id=self._cuda_device_id(),
