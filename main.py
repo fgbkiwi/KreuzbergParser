@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "KreuzbergParser"
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 GITHUB_OWNER = "fgbkiwi"
 GITHUB_REPO = "KreuzbergParser"
 
