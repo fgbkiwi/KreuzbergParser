@@ -23,6 +23,7 @@ from config import (
 from utils.gpu_detector import gpu_detector
 from utils.flet_ui import is_on_session_loop, session_loop
 from utils.logger import detach_process_log_file, log_visible_alert
+from utils.sleep_inhibitor import SleepInhibitor
 from utils.ollama_runtime import (
     install_hint_windows,
     is_ollama_preset,
@@ -1211,6 +1212,11 @@ class OCRApp:
         thread.start()
 
     def process_queue(self):
+        # Impede a suspensão do PC enquanto a fila roda (tela pode apagar).
+        with SleepInhibitor():
+            self._process_queue()
+
+    def _process_queue(self):
         queue = list(self.pdf_queue)
         output_folder = self.output_folder
         if not queue or not output_folder:
